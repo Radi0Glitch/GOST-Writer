@@ -1,20 +1,20 @@
 # Maintainer: Radi0Glitch <radioglitch at github>
 
-pkgname=marked-text-down-git
-pkgver=r1.2.1
+pkgname=gost-writer-git
+pkgver=r1.0.0
 pkgrel=1
-pkgdesc="Lightweight cross-platform visual (WYSIWYG) Markdown editor with formulas, diagrams and charts"
+pkgdesc="Visual WYSIWYG Markdown editor for GOST R 2.105-2019 & GOST R 2.106-2019 (ESKD) documents"
 arch=('x86_64')
-url="https://github.com/Radi0Glitch/Marked-text-down"
+url="https://github.com/Radi0Glitch/GOST-Writer"
 license=('MIT')
 depends=('sdl3' 'sdl3_ttf')
 makedepends=('git' 'meson' 'ninja')
 optdepends=(
-  'pandoc: export to DOCX/PDF/HTML/ODT/EPUB'
-  'typst: PDF export engine used by Pandoc'
+  'pandoc: export to DOCX/HTML/ODT/EPUB'
+  'typst: direct GOST PDF export engine'
 )
-provides=('marked-text-down')
-conflicts=('marked-text-down')
+provides=('gost-writer' 'marked-text-down')
+conflicts=('gost-writer' 'marked-text-down')
 source=("$pkgname::git+$url.git")
 sha256sums=('SKIP')
 

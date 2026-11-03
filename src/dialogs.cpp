@@ -45,7 +45,7 @@ bool ask_restore_autosave() {
 }
 
 void show_error(const std::string& message) {
-    tinyfd_messageBox("Marked-text-down", message.c_str(), "ok", "error", 1);
+    tinyfd_messageBox("GOST-Writer", message.c_str(), "ok", "error", 1);
 }
 
 void show_info(const std::string& title, const std::string& message) {

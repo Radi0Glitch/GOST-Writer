@@ -35,11 +35,14 @@ struct Selection {
 
 // Measure (ctx == nullptr) or draw the chart with its top-left corner at
 // (x, y), laid out to fit into `max_w`. `slots` is filled with clickable
-// category/value cells in editor order.
+// category/value cells in editor order. `max_h > 0` additionally caps the
+// total height, so every slot stays inside a clipped editor canvas; 0 means
+// the natural height (document rendering).
 Size render(ui::Context* ctx, FontBook& fonts, const ChartModel& model,
             float x, float y, float max_w,
             const Selection* selected = nullptr,
-            std::vector<Slot>* slots = nullptr);
+            std::vector<Slot>* slots = nullptr,
+            float max_h = 0.0f);
 
 // Renders a whole code block: parses its text into the model and draws it,
 // or a neutral placeholder when the code has no visual form. The source text

@@ -27,7 +27,7 @@ void FontBook::clear() {
 }
 
 void FontBook::set_zoom(float zoom) {
-    zoom_ = std::clamp(zoom, 0.5f, 8.0f);
+    zoom_ = std::clamp(zoom, 0.25f, 8.0f);
 }
 
 TTF_Font* FontBook::get(Family family, bool bold, bool italic, float size, bool strike) {
@@ -60,7 +60,7 @@ TTF_Font* FontBook::get(Family family, bool bold, bool italic, float size, bool 
 
     TTF_Font* font = TTF_OpenFont((dir_ + "/" + file).c_str(), zoomed);
     if (font) {
-        TTF_SetFontHinting(font, TTF_HINTING_NORMAL);
+        TTF_SetFontHinting(font, TTF_HINTING_NONE);
         int style = 0;
         if (bold) style |= TTF_STYLE_BOLD;
         if (italic) style |= TTF_STYLE_ITALIC;
@@ -82,6 +82,14 @@ TTF_Font* FontBook::get(Family family, bool bold, bool italic, float size, bool 
         cache_.emplace(key, font);
     }
     return font;
+}
+
+TTF_Font* FontBook::get_ref(Family family, bool bold, bool italic, float size, bool strike) {
+    const float saved = zoom_;
+    zoom_ = 1.0f;
+    TTF_Font* f = get(family, bold, italic, size, strike);
+    zoom_ = saved;
+    return f;
 }
 
 } // namespace md

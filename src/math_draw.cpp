@@ -10,7 +10,10 @@ namespace mathdraw {
 namespace {
 
 TTF_Font* face(FontBook& fonts, float size) {
-    return fonts.get(Family::Sans, false, false, size);
+    // `size` передаётся уже с учётом zoom (например, 18.0f * z), поэтому делим на fonts.zoom(),
+    // чтобы FontBook::get не умножал на zoom повторно.
+    const float z = std::max(0.25f, fonts.zoom());
+    return fonts.get(Family::Serif, false, false, size / z);
 }
 
 float font_h(TTF_Font* f) { return static_cast<float>(TTF_GetFontHeight(f)); }

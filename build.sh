@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the release files locally, the same set the release workflow would build:
-#   dist/Marked-text-down-linux-x86_64.tar.gz      portable Linux archive
-#   dist/Marked-text-down-Setup-x86_64.exe         Windows installer (NSIS)
+#   dist/GOST-Writer-linux-x86_64.tar.gz      portable Linux archive
+#   dist/GOST-Writer-Setup-x86_64.exe         Windows installer (NSIS)
 #
 # Usage: ./build.sh [--linux] [--windows] [--sign] [--test]
 #   no part flags   build both
@@ -58,21 +58,22 @@ build_linux() {
     if [ "$DO_TEST" -eq 1 ]; then
         echo "== selftest"
         (cd build-rel && SDL_VIDEODRIVER=dummy XDG_DATA_HOME="$(mktemp -d)" \
-            ./marked-text-down --selftest "$(mktemp -d)/selftest.bmp" > /tmp/mtd-selftest.log 2>&1)
-        echo "selftest: $(grep -ci ' ok' /tmp/mtd-selftest.log) checks passed"
+            ./marked-text-down --selftest "$(mktemp -d)/selftest.bmp" > /tmp/gw-selftest.log 2>&1)
+        echo "selftest: $(grep -ci ' ok' /tmp/gw-selftest.log) checks passed"
     fi
 
-    local R="dist/Marked-text-down-linux-x86_64"
+    local R="dist/GOST-Writer-linux-x86_64"
     rm -rf "$R"
-    mkdir -p "$R/tools/pandoc/linux-x86_64" "$R/tools/typst/linux-x86_64"
+    mkdir -p "$R/tools/pandoc/linux-x86_64" "$R/tools/typst/linux-x86_64" "$R/packaging/icons"
     cp build-rel/marked-text-down "$R/"
     copy_fonts "$R"
+    cp packaging/icons/gw-logo-64.bmp "$R/packaging/icons/"
     cp README.md LICENSE.md marked-text-down.desktop "$R/"
     cp tools/pandoc/linux-x86_64/pandoc "$R/tools/pandoc/linux-x86_64/"
     cp tools/typst/linux-x86_64/typst "$R/tools/typst/linux-x86_64/"
-    tar czf dist/Marked-text-down-linux-x86_64.tar.gz -C dist Marked-text-down-linux-x86_64
+    tar czf dist/GOST-Writer-linux-x86_64.tar.gz -C dist GOST-Writer-linux-x86_64
     rm -rf "$R"
-    echo "-> dist/Marked-text-down-linux-x86_64.tar.gz"
+    echo "-> dist/GOST-Writer-linux-x86_64.tar.gz"
 }
 
 build_windows() {
@@ -87,24 +88,25 @@ build_windows() {
     meson compile -C build-win
 
     local M="third_party/mingw"
-    local W="dist/Marked-text-down-windows-x86_64"
+    local W="dist/GOST-Writer-windows-x86_64"
     rm -rf "$W"
-    mkdir -p "$W/tools/pandoc/windows-x86_64" "$W/tools/typst/windows-x86_64"
+    mkdir -p "$W/tools/pandoc/windows-x86_64" "$W/tools/typst/windows-x86_64" "$W/packaging/icons"
     cp build-win/marked-text-down.exe "$W/"
     cp "$M"/SDL3-*/x86_64-w64-mingw32/bin/SDL3.dll "$M"/SDL3_ttf-*/x86_64-w64-mingw32/bin/SDL3_ttf.dll "$W/"
     copy_fonts "$W"
+    cp packaging/icons/gw-logo-64.bmp "$W/packaging/icons/"
     cp README.md LICENSE.md marked-text-down.desktop packaging/icons/mtd-logo.ico installer.nsi "$W/"
     cp tools/pandoc/windows-x86_64/pandoc.exe "$W/tools/pandoc/windows-x86_64/"
     cp tools/typst/windows-x86_64/typst.exe "$W/tools/typst/windows-x86_64/"
-    (cd "$W" && makensis -V2 installer.nsi >/tmp/mtd-nsis.log 2>&1)
-    test -f dist/Marked-text-down-Setup-x86_64.exe
+    (cd "$W" && makensis -V2 installer.nsi >/tmp/gw-nsis.log 2>&1)
+    test -f dist/GOST-Writer-Setup-x86_64.exe
     rm -rf "$W"
-    echo "-> dist/Marked-text-down-Setup-x86_64.exe"
+    echo "-> dist/GOST-Writer-Setup-x86_64.exe"
 }
 
 sign_outputs() {
     echo "== signing"
-    for f in dist/Marked-text-down-linux-x86_64.tar.gz dist/Marked-text-down-Setup-x86_64.exe; do
+    for f in dist/GOST-Writer-linux-x86_64.tar.gz dist/GOST-Writer-Setup-x86_64.exe; do
         [ -f "$f" ] || continue
         gpg --yes --armor --detach-sign -u F97C07F236D69415 "$f"
         echo "-> $f.asc"

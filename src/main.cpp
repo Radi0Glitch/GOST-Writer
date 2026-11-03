@@ -3,13 +3,16 @@
 #include <SDL3_ttf/SDL_ttf.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <string>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <sstream>
+#include <string>
 #include <vector>
 
 namespace {
@@ -83,6 +86,118 @@ static const PTemplate kChartTemplates[] = {
 #include "dialogs.hpp"
 #include "window_state.hpp"
 #include "document.hpp"
+
+// ---------- Minimal PNG encoder + offscreen rendering for diagrams/charts ----------
+
+namespace {
+uint32_t png_crc32(const uint8_t* data, size_t len, uint32_t crc = 0xFFFFFFFFu) {
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; ++j)
+            crc = (crc & 1) ? (0xEDB88320u ^ (crc >> 1)) : (crc >> 1);
+    }
+    return crc;
+}
+
+void png_write_be32(std::ofstream& f, uint32_t v) {
+    uint8_t b[4] = { (uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v };
+    f.write((const char*)b, 4);
+}
+
+void png_chunk(std::ofstream& f, const char* type, const uint8_t* data, size_t len) {
+    png_write_be32(f, (uint32_t)len);
+    f.write(type, 4);
+    if (len > 0) f.write((const char*)data, len);
+    uint32_t crc = png_crc32(reinterpret_cast<const uint8_t*>(type), 4, 0xFFFFFFFFu);
+    if (len > 0) crc = png_crc32(data, len, crc);
+    png_write_be32(f, crc ^ 0xFFFFFFFFu);
+}
+
+std::vector<uint8_t> png_zlib_compress(const uint8_t* data, size_t len) {
+    std::vector<uint8_t> out;
+    out.reserve(len + (len / 65535 + 1) * 5 + 6);
+    out.push_back(0x78);
+    out.push_back(0x01); // zlib header (no compression)
+    size_t pos = 0;
+    while (pos < len) {
+        const size_t block = std::min<size_t>(len - pos, 65535);
+        const bool last = (pos + block == len);
+        out.push_back(static_cast<uint8_t>(last ? 1 : 0)); // BFINAL | BTYPE=00 (stored)
+        const uint16_t b_len = static_cast<uint16_t>(block);
+        const uint16_t b_nlen = static_cast<uint16_t>(~b_len);
+        out.push_back(static_cast<uint8_t>(b_len & 0xFF));
+        out.push_back(static_cast<uint8_t>(b_len >> 8));
+        out.push_back(static_cast<uint8_t>(b_nlen & 0xFF));
+        out.push_back(static_cast<uint8_t>(b_nlen >> 8));
+        out.insert(out.end(), data + pos, data + pos + block);
+        pos += block;
+    }
+    // Adler-32 checksum in big-endian
+    uint32_t s1 = 1, s2 = 0;
+    for (size_t i = 0; i < len; ++i) {
+        s1 = (s1 + data[i]) % 65521u;
+        s2 = (s2 + s1) % 65521u;
+    }
+    const uint32_t adler = (s2 << 16) | s1;
+    out.push_back(static_cast<uint8_t>(adler >> 24));
+    out.push_back(static_cast<uint8_t>(adler >> 16));
+    out.push_back(static_cast<uint8_t>(adler >> 8));
+    out.push_back(static_cast<uint8_t>(adler));
+    return out;
+}
+
+bool save_png_rgb(const std::string& path, int w, int h, const uint8_t* rgb) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return false;
+    const uint8_t sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
+    f.write((const char*)sig, 8);
+    {
+        uint8_t ihdr[13];
+        const uint32_t uw = (uint32_t)w, uh = (uint32_t)h;
+        ihdr[0] = (uint8_t)(uw >> 24); ihdr[1] = (uint8_t)(uw >> 16);
+        ihdr[2] = (uint8_t)(uw >> 8);  ihdr[3] = (uint8_t)uw;
+        ihdr[4] = (uint8_t)(uh >> 24); ihdr[5] = (uint8_t)(uh >> 16);
+        ihdr[6] = (uint8_t)(uh >> 8);  ihdr[7] = (uint8_t)uh;
+        ihdr[8] = 8;
+        ihdr[9] = 2;
+        ihdr[10] = 0;
+        ihdr[11] = 0;
+        ihdr[12] = 0;
+        png_chunk(f, "IHDR", ihdr, 13);
+    }
+    {
+        size_t row_size = (size_t)w * 3 + 1;
+        size_t raw_len = row_size * h;
+        std::vector<uint8_t> raw(raw_len);
+        for (int y = 0; y < h; ++y) {
+            raw[y * row_size] = 0;
+            memcpy(raw.data() + y * row_size + 1, rgb + (size_t)y * (size_t)w * 3, (size_t)w * 3);
+        }
+        auto comp = png_zlib_compress(raw.data(), raw.size());
+        if (comp.empty()) return false;
+        png_chunk(f, "IDAT", comp.data(), comp.size());
+    }
+    png_chunk(f, "IEND", nullptr, 0);
+    return f.good();
+}
+
+bool save_surface_png(SDL_Surface* surf, const std::string& path) {
+    if (!surf) return false;
+    SDL_Surface* rgb24 = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGB24);
+    if (!rgb24) return false;
+    std::vector<uint8_t> packed((size_t)rgb24->w * (size_t)rgb24->h * 3);
+    const uint8_t* src = static_cast<const uint8_t*>(rgb24->pixels);
+    for (int y = 0; y < rgb24->h; ++y) {
+        std::memcpy(packed.data() + (size_t)y * (size_t)rgb24->w * 3,
+                    src + (size_t)y * (size_t)rgb24->pitch,
+                    (size_t)rgb24->w * 3);
+    }
+    const bool ok = save_png_rgb(path, rgb24->w, rgb24->h, packed.data());
+    SDL_DestroySurface(rgb24);
+    return ok;
+}
+} // namespace
+
 #include "editor.hpp"
 #include "fontbook.hpp"
 #include "history.hpp"
@@ -92,6 +207,7 @@ static const PTemplate kChartTemplates[] = {
 #include "math_model.hpp"
 #include "render.hpp"
 #include "search.hpp"
+#include "text.hpp"
 #include "ui.hpp"
 
 #include <filesystem>
@@ -321,6 +437,11 @@ struct App {
     bool diag_sel_edge = false;                 // the index counts edges when set
     int diag_off = 0;                           // byte caret offset inside its label
     std::vector<md::diagdraw::Slot> diag_slots; // hit-test rects from the last draw
+
+    // footnote editor (по ГОСТ Р 2.105 п. 6.13) — текст редактируется в отдельной панели
+    bool footnote_editor_open = false;
+    int active_footnote_id = 0;
+    int footnote_off = 0;
     bool chart_editor_open = false;
     bool chart_just_opened = false;             // swallow the click that opened it
     int chart_block = -1;                       // block being edited, -1 = new
@@ -344,6 +465,65 @@ struct App {
     md::Editor editor{doc};
     md::Layout layout;
     md::History history;
+    md::StampField active_stamp_field = md::StampField::None;
+    std::string* active_stamp_target = nullptr;
+    std::vector<md::StampSlot> stamp_slots;
+
+    std::string* stamp_field_str(md::StampField f) {
+        if (active_stamp_target != nullptr && f == active_stamp_field) {
+            return active_stamp_target;
+        }
+        switch (f) {
+            case md::StampField::Code:             return &doc.meta.code;
+            case md::StampField::Name:             return &doc.meta.name;
+            case md::StampField::Org:              return &doc.meta.org;
+            case md::StampField::Dev:              return &doc.meta.dev;
+            case md::StampField::Check:            return &doc.meta.check;
+            case md::StampField::TCheck:           return &doc.meta.tcheck;
+            case md::StampField::NCheck:           return &doc.meta.ncheck;
+            case md::StampField::Approve:          return &doc.meta.approve;
+            case md::StampField::TitleOrg:         return &doc.meta.title_org;
+            case md::StampField::TitleOkpd:        return &doc.meta.title_okpd;
+            case md::StampField::TitleAgreeRole:   return &doc.meta.title_agree_role;
+            case md::StampField::TitleAgreeName:   return &doc.meta.title_agree_name;
+            case md::StampField::TitleApproveRole: return &doc.meta.title_approve_role;
+            case md::StampField::TitleApproveName: return &doc.meta.title_approve_name;
+            case md::StampField::TitleProduct:     return &doc.meta.title_product;
+            case md::StampField::TitleDocKind:     return &doc.meta.title_doc_kind;
+            case md::StampField::TitleYear:        return &doc.meta.title_year;
+            default: return active_stamp_target;
+        }
+    }
+
+    bool is_editing_stamp() const {
+        return active_stamp_field != md::StampField::None || active_stamp_target != nullptr;
+    }
+
+    void clear_stamp_focus() {
+        active_stamp_field = md::StampField::None;
+        active_stamp_target = nullptr;
+    }
+
+    void step_stamp_field(int dir) {
+        if (!is_editing_stamp()) return;
+        std::vector<const md::StampSlot*> edit_slots;
+        int cur = -1;
+        for (const md::StampSlot& s : stamp_slots) {
+            if (s.action > 0) continue;
+            if ((active_stamp_target != nullptr && s.target == active_stamp_target)
+                || (active_stamp_target == nullptr && s.field != md::StampField::None && s.field == active_stamp_field)) {
+                cur = static_cast<int>(edit_slots.size());
+            }
+            edit_slots.push_back(&s);
+        }
+        if (edit_slots.empty()) return;
+        int next = (cur < 0) ? 0 : (cur + dir);
+        const int n = static_cast<int>(edit_slots.size());
+        next = ((next % n) + n) % n;
+        active_stamp_field = edit_slots[static_cast<size_t>(next)]->field;
+        active_stamp_target = edit_slots[static_cast<size_t>(next)]->target;
+        editor.blink_tick = SDL_GetTicks();
+    }
     float toolbar_h = 52.0f;
     ui::Rect file_rect{};
     bool file_export_mode = false; // the File menu shows the export formats instead
@@ -416,7 +596,7 @@ struct App {
     std::string file_path; // empty until the document is opened or saved
     bool modified = false; // unsaved changes
 
-    int dialect = 0;
+    int dialect = 1;
     std::string status = "Готово";
     int width = 0;
     int height = 0;
@@ -424,7 +604,9 @@ struct App {
     float window_scale() const {
         return std::clamp(std::min(width / 1100.0f, height / 720.0f), 1.0f, 4.0f);
     }
-    float text_zoom() const { return zoom * window_scale(); }
+    float text_zoom() const {
+        return zoom * window_scale();
+    }
     bool has_pandoc = false;
     std::string pandoc_path;
     std::string typst_path;
@@ -432,7 +614,7 @@ struct App {
     std::vector<std::string> pending_drops;
     bool drop_gesture_active = false;
 
-    bool gfm() const { return dialect == 1; }
+    bool gfm() const { return true; }
     bool en() const { return ui_lang == 1; }
     const char* tr(const char* ru, const char* en_str) const { return en() ? en_str : ru; }
 
@@ -529,7 +711,7 @@ struct App {
 
     void update_title() {
         SDL_SetWindowTitle(window, ((modified ? "* " : "") + document_name()
-                                    + " — Marked-text-down").c_str());
+                                    + " — GOST-Writer").c_str());
     }
 
     void mark_edited() {
@@ -718,17 +900,9 @@ struct App {
             return OpenResult::Error;
         }
 
-        const int detected = md::looks_like_gfm(text) ? 1 : 0;
-        const bool dialect_changed = (detected != dialect);
         md::Document loaded;
-        md::import_markdown(text, detected == 1, loaded);
-
-        dialect = detected;
-        if (dialect_changed && show_dialogs && !from_external) {
-            dialogs::show_info(tr("Диалект изменён", "Dialect changed"),
-                               en() ? ("File uses dialect \"" + kDialects[dialect] + "\".\nDialect switched automatically.")
-                                    : ("Файл записан в диалекте «" + kDialects[dialect] + "».\nДиалект переключён автоматически."));
-        }
+        md::import_markdown(text, true, loaded);
+        dialect = 1;
 
         doc = std::move(loaded);
         editor.set_caret(md::Pos{0, 0, 0});
@@ -771,6 +945,22 @@ struct App {
         };
         if (index >= sizeof(fmts) / sizeof(fmts[0])) return;
         const Fmt& f = fmts[index];
+        if (std::string(f.to) == "pdf") {
+            if (typst_path.empty()) {
+                dialogs::show_error(tr("Typst не найден", "Typst not found"));
+                return;
+            }
+            const std::string out = dialogs::save_export(f.ext, f.filter, f.label);
+            if (out.empty()) return;
+            if (export_gost_pdf(out)) {
+                dialogs::show_info(tr("Экспорт ГОСТ PDF", "GOST PDF Export"),
+                                   tr("Документ PDF по ГОСТ сформирован", "GOST PDF exported"));
+                status = std::string(tr("Экспортировано по ГОСТ: ", "Exported GOST: ")) + f.label;
+            } else {
+                dialogs::show_error(tr("Ошибка сборки PDF через Typst", "Typst PDF build failed"));
+            }
+            return;
+        }
         if (!has_pandoc || pandoc_path.empty()) {
             dialogs::show_error(tr("Pandoc не найден", "Pandoc not found"));
             return;
@@ -785,7 +975,691 @@ struct App {
         }
     }
 
+    static std::string typst_escape_str(const std::string& s) {
+        std::string out;
+        for (char c : s) {
+            if (c == '\\' || c == '"') out.push_back('\\');
+            if (c != '\r' && c != '\n') out.push_back(c);
+        }
+        return out;
+    }
+
+    static std::string typst_escape_content(const std::string& s) {
+        std::string out;
+        for (char c : s) {
+            if (c == '#' || c == '*' || c == '_' || c == '`' || c == '$'
+                || c == '<' || c == '>' || c == '@' || c == '\\' || c == '[' || c == ']') {
+                out.push_back('\\');
+            }
+            out.push_back(c);
+        }
+        return out;
+    }
+
+    static std::string typst_inlines(const std::vector<md::Inline>& inls) {
+        std::string out;
+        for (const md::Inline& inl : inls) {
+            if (inl.footnote_id > 0) {
+                out += "#footnote[__FOOTNOTE_" + std::to_string(inl.footnote_id) + "__]";
+                continue;
+            }
+            if (inl.text.empty()) continue;
+            if (inl.style & md::StyleImage) {
+                // Изображение: вставляем как картинку Typst, а fallback — ссылка.
+                out += "#image(\"" + typst_escape_str(inl.href) + "\", width: 60%)";
+                continue;
+            }
+            if (inl.style & md::StyleLink) {
+                // Ссылка: гиперссылка Typst с текстом в качестве анкора.
+                std::string piece = typst_escape_content(inl.text.empty() ? inl.href : inl.text);
+                out += "#link(\"" + typst_escape_str(inl.href) + "\")[" + piece + "]";
+                continue;
+            }
+            if (inl.style & md::StyleCode) {
+                out += "`" + inl.text + "`";
+                continue;
+            }
+            // Встроенная формула $...$: в Typst экспортируем как inline math.
+            if (!inl.text.empty() && inl.text.front() == '$' && inl.text.back() == '$'
+                && inl.text.size() >= 2) {
+                out += "$" + typst_escape_content(inl.text.substr(1, inl.text.size() - 2)) + "$";
+                continue;
+            }
+            std::string piece = typst_escape_content(inl.text);
+            if (inl.style & md::StyleBold) piece = "#strong[" + piece + "]";
+            if (inl.style & md::StyleItalic) piece = "#emph[" + piece + "]";
+            if (inl.style & md::StyleStrike) piece = "#strike[" + piece + "]";
+            out += piece;
+        }
+        return out;
+    }
+
+    // Рендерит визуальный блок (формулу, диаграмму, график) в PNG-файл в светлой ГОСТ-палитре.
+    std::string render_visual_block_to_png(const md::Block& b, const std::string& temp_dir, size_t idx) {
+        if (!renderer) return std::string();
+        std::string code;
+        for (const md::Inline& inl : b.inlines) code += inl.text;
+        const std::string& lang = b.lang;
+        const bool is_math = (lang == "math" || lang == "latex" || lang == "tex");
+        const bool is_diag = md::is_diagram_lang(lang) && !is_math;
+        const bool is_chart = is_diag && md::is_chart_text(code);
+        if (!is_math && !is_diag) return std::string();
+
+        const float saved_zoom = fontbook.zoom();
+        fontbook.set_zoom(2.0f);
+        const float max_w = 1300.0f;
+        float vis_w = 0.0f, vis_h = 0.0f;
+        if (is_math) {
+            const md::MathNode node = md::math_from_latex(code);
+            const auto sz = md::mathdraw::render(nullptr, fontbook, node, 0.0f, 0.0f, 36.0f, nullptr, nullptr);
+            vis_w = sz.w + 16.0f;
+            vis_h = sz.h + 16.0f;
+        } else if (is_chart) {
+            bool ok = false;
+            (void)md::chart_from_text(code, &ok);
+            if (!ok) { fontbook.set_zoom(saved_zoom); return std::string(); }
+            const auto sz = md::chartdraw::render_block(nullptr, fontbook, code, 0.0f, 0.0f, max_w);
+            vis_w = sz.w + 16.0f;
+            vis_h = sz.h + 16.0f;
+        } else {
+            const auto sz = md::diagdraw::render_block(nullptr, fontbook, code, 0.0f, 0.0f, max_w);
+            vis_w = sz.w + 16.0f;
+            vis_h = sz.h + 16.0f;
+        }
+        if (vis_w <= 4.0f || vis_h <= 4.0f) {
+            fontbook.set_zoom(saved_zoom);
+            return std::string();
+        }
+        const int pw = std::max(64, static_cast<int>(std::ceil(vis_w)));
+        const int ph = std::max(36, static_cast<int>(std::ceil(vis_h)));
+
+        SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+                                             SDL_TEXTUREACCESS_TARGET, pw, ph);
+        if (!tex) {
+            fontbook.set_zoom(saved_zoom);
+            return std::string();
+        }
+        SDL_Texture* prev_target = SDL_GetRenderTarget(renderer);
+        SDL_SetRenderTarget(renderer, tex);
+        SDL_SetRenderClipRect(renderer, nullptr);
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL_RenderClear(renderer);
+
+        ui::Context ctx{};
+        ctx.renderer = renderer;
+        ctx.fonts = &fonts;
+        ctx.palette = ui::light_palette();
+
+        if (is_math) {
+            const md::MathNode node = md::math_from_latex(code);
+            md::mathdraw::render(&ctx, fontbook, node, 8.0f, 8.0f, 36.0f, nullptr, nullptr);
+        } else if (is_chart) {
+            md::chartdraw::render_block(&ctx, fontbook, code, 8.0f, 8.0f, static_cast<float>(pw) - 16.0f);
+        } else {
+            md::diagdraw::render_block(&ctx, fontbook, code, 8.0f, 8.0f, static_cast<float>(pw) - 16.0f);
+        }
+
+        SDL_FlushRenderer(renderer);
+        SDL_Surface* surf = SDL_RenderReadPixels(renderer, nullptr);
+        SDL_SetRenderTarget(renderer, prev_target);
+        SDL_DestroyTexture(tex);
+        fontbook.set_zoom(saved_zoom);
+
+        if (!surf) return std::string();
+        const std::string png_path = temp_dir + "visual_block_" + std::to_string(idx) + ".png";
+        const bool ok = save_surface_png(surf, png_path);
+        SDL_DestroySurface(surf);
+        return ok ? png_path : std::string();
+    }
+
+    // Рендерит каждый лист документа (с рамкой А4, боковым штампом, основной надписью,
+    // титульным листом, содержанием, таблицами, графиками, диаграммами, формулами и сносками)
+    // ровно так, как он отображается в редакторе, в набор PNG-файлов.
+    std::vector<std::string> render_all_pages_to_png(const std::string& temp_dir, float scale = 2.0f) {
+        std::vector<std::string> paths;
+        if (!renderer) return paths;
+
+        const float saved_zoom = fontbook.zoom();
+        const int saved_pt = fontbook.base_pt();
+        fontbook.set_base_pt(doc.meta.font_pt);
+        fontbook.set_zoom(scale);
+
+        const float content_w = 700.0f * scale;
+        md::Layout export_layout;
+        md::layout_document(doc, fontbook, content_w, export_layout, md::MathReveal{});
+
+        const float mm = std::max(1.0f, export_layout.mm_px);
+        const int page_w = std::max(100, static_cast<int>(std::round(210.0f * mm)));
+        const int page_h = std::max(100, static_cast<int>(std::round(297.0f * mm)));
+        const int total_pages = std::max(1, static_cast<int>(export_layout.page_tops.size()));
+
+        SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+                                             SDL_TEXTUREACCESS_TARGET, page_w, page_h);
+        if (!tex) {
+            fontbook.set_base_pt(saved_pt);
+            fontbook.set_zoom(saved_zoom);
+            return paths;
+        }
+
+        SDL_Texture* prev_target = SDL_GetRenderTarget(renderer);
+        ui::Context ctx{};
+        ctx.renderer = renderer;
+        ctx.fonts = &fonts;
+        ctx.palette = ui::light_palette();
+        ctx.input.mouse_x = -10000.0f;
+        ctx.input.mouse_y = -10000.0f;
+
+        for (int p = 0; p < total_pages; ++p) {
+            const float pt = export_layout.page_tops.empty()
+                ? 0.0f
+                : export_layout.page_tops[static_cast<size_t>(p)];
+            SDL_SetRenderTarget(renderer, tex);
+            SDL_SetRenderClipRect(renderer, nullptr);
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            SDL_RenderClear(renderer);
+
+            const ui::Rect vp{25.0f * mm, 0.0f, content_w, static_cast<float>(page_h)};
+            md::render_document(ctx, doc, export_layout, fontbook, vp, pt, nullptr);
+
+            SDL_FlushRenderer(renderer);
+            SDL_Surface* surf = SDL_RenderReadPixels(renderer, nullptr);
+            if (surf) {
+                const std::string png_path = temp_dir + "gost_page_" + std::to_string(p + 1) + ".png";
+                if (save_surface_png(surf, png_path)) {
+                    paths.push_back(png_path);
+                }
+                SDL_DestroySurface(surf);
+            }
+        }
+
+        SDL_SetRenderTarget(renderer, prev_target);
+        SDL_DestroyTexture(tex);
+        fontbook.set_base_pt(saved_pt);
+        fontbook.set_zoom(saved_zoom);
+        doc_dirty = true;
+        return paths;
+    }
+
+    bool export_gost_pdf(const std::string& out_path) {
+        if (typst_path.empty()) return false;
+        std::string temp_dir;
+        if (char* pref = SDL_GetPrefPath("MarkedTextDown", "Editor")) {
+            temp_dir = pref;
+            SDL_free(pref);
+        }
+        const std::string tmp_typ = temp_dir + "gost_export_tmp.typ";
+
+        // Рендерим каждый лист А4 через md::render_document, чтобы 100% совпадали:
+        // рамка 185x287 мм, боковой штамп, основная надпись Форма 2 / 2а, титульный лист,
+        // содержание с отточием, нумерация разделов, таблицы, формулы, диаграммы, графики и сноски.
+        std::vector<std::string> page_pngs = render_all_pages_to_png(temp_dir, 1.8f);
+        std::ostringstream typ;
+        if (!page_pngs.empty()) {
+            typ << "#set page(paper: \"a4\", margin: 0mm)\n"
+                << "#set par(spacing: 0mm, leading: 0mm)\n";
+            for (size_t i = 0; i < page_pngs.size(); ++i) {
+                if (i > 0) typ << "#pagebreak()\n";
+                typ << "#image(\"" << typst_escape_str(page_pngs[i])
+                    << "\", width: 210mm, height: 297mm, fit: \"stretch\")\n";
+            }
+        } else {
+            typ << "#let f = (\n"
+            << "  name: \"" << typst_escape_str(doc.meta.name) << "\",\n"
+            << "  code: \"" << typst_escape_str(doc.meta.code) << "\",\n"
+            << "  org: \"" << typst_escape_str(doc.meta.org) << "\",\n"
+            << "  dev: \"" << typst_escape_str(doc.meta.dev) << "\",\n"
+            << "  check: \"" << typst_escape_str(doc.meta.check) << "\",\n"
+            << "  tcheck: \"" << typst_escape_str(doc.meta.tcheck) << "\",\n"
+            << "  ncheck: \"" << typst_escape_str(doc.meta.ncheck) << "\",\n"
+            << "  approve: \"" << typst_escape_str(doc.meta.approve) << "\",\n"
+            << ")\n\n"
+            << "#let s-thick = 0.7pt\n"
+            << "#let s-thin = 0.25pt\n"
+            << "#let lab(t) = text(size: 6pt, style: \"italic\", t)\n"
+            << "#let val(t, size: 8pt) = text(size: size, t)\n"
+            << "#let cell(x, y, w, h, body, stroke: s-thick, align-to: horizon + left, inset-x: 0.8mm) = place(\n"
+            << "  top + left, dx: x, dy: y,\n"
+            << "  box(width: w, height: h, stroke: stroke, inset: (x: inset-x, y: 0.3mm))[#align(align-to)[#body]],\n"
+            << ")\n"
+            << "#let side-stamp() = {\n"
+            << "  let hs = (35mm, 25mm, 25mm, 35mm, 25mm)\n"
+            << "  let labels = ([Подп. и дата], [Инв. № дубл.], [Взам. инв. №], [Подп. и дата], [Инв. № подл.])\n"
+            << "  let y = 0mm\n"
+            << "  for i in range(5) {\n"
+            << "    let h = hs.at(i)\n"
+            << "    cell(0mm, y, 5mm, h, rotate(-90deg, reflow: true)[#lab(labels.at(i))], align-to: horizon + center, inset-x: 0mm)\n"
+            << "    cell(5mm, y, 7mm, h, [])\n"
+            << "    y += h\n"
+            << "  }\n"
+            << "}\n"
+            << "#let stamp-first(f, sheet, sheets) = {\n"
+            << "  let cx = (0mm, 7mm, 17mm, 40mm, 55mm, 65mm)\n"
+            << "  for r in range(2) {\n"
+            << "    let y = 5mm * r\n"
+            << "    for i in range(5) {\n"
+            << "      cell(cx.at(i), y, cx.at(i + 1) - cx.at(i), 5mm, [], stroke: (left: s-thick, right: s-thick, top: if r == 0 { s-thick } else { s-thin }, bottom: s-thin))\n"
+            << "    }\n"
+            << "  }\n"
+            << "  for (i, t) in ([Изм.], [Лист], [№ докум.], [Подп.], [Дата]).enumerate() {\n"
+            << "    cell(cx.at(i), 10mm, cx.at(i + 1) - cx.at(i), 5mm, lab(t), stroke: (left: s-thick, right: s-thick, top: s-thin, bottom: s-thick), align-to: horizon + center, inset-x: 0.2mm)\n"
+            << "  }\n"
+            << "  let roles = ([Разраб.], [Пров.], [], [Н.контр.], [Утв.])\n"
+            << "  let values = (f.dev, f.check, f.tcheck, f.ncheck, f.approve)\n"
+            << "  for r in range(5) {\n"
+            << "    let y = 15mm + 5mm * r\n"
+            << "    let st = (left: s-thick, right: s-thick, top: if r == 0 { s-thick } else { s-thin }, bottom: if r == 4 { s-thick } else { s-thin })\n"
+            << "    let role-txt = if r == 2 and f.tcheck != \"\" { [Т.контр.] } else { roles.at(r) }\n"
+            << "    cell(0mm, y, 17mm, 5mm, lab(role-txt), stroke: st)\n"
+            << "    cell(17mm, y, 23mm, 5mm, val(values.at(r), size: 7pt), stroke: st)\n"
+            << "    cell(40mm, y, 15mm, 5mm, [], stroke: st)\n"
+            << "    cell(55mm, y, 10mm, 5mm, [], stroke: st)\n"
+            << "  }\n"
+            << "  cell(65mm, 0mm, 120mm, 15mm, val(f.code, size: 11pt), align-to: horizon + center)\n"
+            << "  cell(65mm, 15mm, 67mm, 25mm, val(f.name, size: 10pt), align-to: horizon + center)\n"
+            << "  cell(132mm, 15mm, 15mm, 5mm, lab[Лит.], align-to: horizon + center)\n"
+            << "  cell(147mm, 15mm, 15mm, 5mm, lab[Лист], align-to: horizon + center)\n"
+            << "  cell(162mm, 15mm, 23mm, 5mm, lab[Листов], align-to: horizon + center)\n"
+            << "  for i in range(3) {\n"
+            << "    cell(132mm + 5mm * i, 20mm, 5mm, 5mm, [], stroke: (top: s-thick, bottom: s-thick, left: if i == 0 { s-thick } else { s-thin }, right: if i == 2 { s-thick } else { s-thin }))\n"
+            << "  }\n"
+            << "  cell(147mm, 20mm, 15mm, 5mm, val(size: 8pt)[#sheet], align-to: horizon + center)\n"
+            << "  cell(162mm, 20mm, 23mm, 5mm, val(size: 8pt)[#sheets], align-to: horizon + center)\n"
+            << "  cell(132mm, 25mm, 53mm, 15mm, val(f.org, size: 9pt), align-to: horizon + center)\n"
+            << "}\n"
+            << "#let stamp-next(f, sheet) = {\n"
+            << "  let cx = (0mm, 7mm, 17mm, 40mm, 55mm, 65mm)\n"
+            << "  for r in range(2) {\n"
+            << "    let y = 5mm * r\n"
+            << "    for i in range(5) {\n"
+            << "      cell(cx.at(i), y, cx.at(i + 1) - cx.at(i), 5mm, [], stroke: (left: s-thick, right: s-thick, top: if r == 0 { s-thick } else { s-thin }, bottom: s-thin))\n"
+            << "    }\n"
+            << "  }\n"
+            << "  for (i, t) in ([Изм.], [Лист], [№ докум.], [Подп.], [Дата]).enumerate() {\n"
+            << "    cell(cx.at(i), 10mm, cx.at(i + 1) - cx.at(i), 5mm, lab(t), stroke: (left: s-thick, right: s-thick, top: s-thin, bottom: s-thick), align-to: horizon + center, inset-x: 0.2mm)\n"
+            << "  }\n"
+            << "  cell(65mm, 0mm, 110mm, 15mm, val(f.code, size: 10pt), align-to: horizon + center)\n"
+            << "  cell(175mm, 0mm, 10mm, 7mm, lab[Лист], align-to: horizon + center, inset-x: 0.2mm)\n"
+            << "  cell(175mm, 7mm, 10mm, 8mm, val(size: 8pt)[#sheet], align-to: horizon + center, inset-x: 0.2mm)\n"
+            << "}\n";
+        const int title_pages = md::gost_title_pages(doc.meta);
+        const int first_text_p = title_pages + 1;
+        typ << "#let frame-bg = context {\n"
+            << "  let p = counter(page).get().first()\n"
+            << "  let total = counter(page).final().first()\n"
+            << "  place(top + left, dx: 20mm, dy: 5mm, rect(width: 185mm, height: 287mm, stroke: s-thick))\n"
+            << "  place(top + left, dx: 8mm, dy: 147mm)[#side-stamp()]\n"
+            << "  if p == " << first_text_p << " {\n"
+            << "    place(top + left, dx: 20mm, dy: 252mm)[#stamp-first(f, p, total)]\n"
+            << "  } else if p > " << first_text_p << " {\n"
+            << "    place(top + left, dx: 20mm, dy: 277mm)[#stamp-next(f, p)]\n"
+            << "  }\n"
+            << "  place(top + left, dx: 20mm, dy: 292mm)[\n"
+            << "    #box(width: 185mm, height: 5mm)[\n"
+            << "      #place(top + left, dx: 66mm, dy: 0.8mm)[#lab[Копировал]]\n"
+            << "      #place(top + left, dx: 135mm, dy: 0.8mm)[#lab[Формат А4]]\n"
+            << "    ]\n"
+            << "  ]\n"
+            << "}\n"
+            << "#set page(paper: \"a4\", margin: (left: 25mm, right: 10mm, top: 15mm, bottom: 30mm), background: frame-bg)\n"
+            << "#set text(font: \"PT Serif\", size: " << std::clamp(doc.meta.font_pt, 11, 14) << "pt, lang: \"ru\", hyphenate: true)\n"
+            << "#set par(justify: true, leading: " << (0.65f * md::gost_line_spacing(doc.meta.line_spacing_idx)) << "em, first-line-indent: 12.5mm)\n"
+            << "#show heading: set block(above: 14mm, below: 10mm)\n"
+            << "#show heading: set par(first-line-indent: 12.5mm)\n"
+            << "#show heading: set text(hyphenate: false)\n\n";
+
+        auto emit_sign_entry = [&](const md::TitleSign& s) {
+            typ << "      " << typst_escape_content(s.role) << "\\\n"
+                << "      #v(4mm)\n"
+                << "      \\________________________ " << typst_escape_content(s.name) << "\\\n";
+            if (!s.date.empty()) {
+                typ << "      #text(size: 10pt)[" << typst_escape_content(s.date) << "]\\\n";
+            }
+            typ << "      #v(4mm)\n";
+        };
+
+        if (doc.meta.has_title_page) {
+            if (doc.meta.title_by_lu) {
+                typ << "// Титульный лист при наличии ЛУ (п. 8.11, Приложение Г ГОСТ Р 2.105-2019)\n"
+                    << "#block(width: 100%, height: 100%)[\n"
+                    << "  #set par(first-line-indent: 0mm)\n"
+                    << "  #v(12mm)\n"
+                    << "  #strong[Утвержден]\\\n"
+                    << "  #strong[" << typst_escape_content(doc.meta.code) << "-ЛУ]\n"
+                    << "  #v(75mm)\n"
+                    << "  #align(center)[\n"
+                    << "    #text(size: 16pt, weight: \"bold\")[" << typst_escape_content(doc.meta.title_product) << "]\\\n"
+                    << "    #v(4mm)\n"
+                    << "    #text(size: 14pt)[" << typst_escape_content(doc.meta.title_doc_kind) << "]\\\n"
+                    << "    #v(6mm)\n"
+                    << "    #text(size: 14pt, weight: \"bold\")[" << typst_escape_content(doc.meta.code) << "]\n"
+                    << "  ]\n"
+                    << "  #v(1fr)\n"
+                    << "  #align(center)[#text(size: 12pt)[" << typst_escape_content(doc.meta.title_year) << "]]\n"
+                    << "]\n"
+                    << "#pagebreak()\n\n";
+            } else {
+                typ << "// Титульный лист по разделу 8 ГОСТ Р 2.105-2019\n"
+                    << "#block(width: 100%, height: 100%)[\n"
+                    << "  #set par(first-line-indent: 0mm)\n"
+                    << "  #align(center)[#text(size: 12pt)[" << typst_escape_content(doc.meta.title_org) << "]]\n"
+                    << "  #v(6mm)\n";
+                if (!doc.meta.title_okpd.empty()) {
+                    typ << "  #text(size: 10pt)[Код ОКПД 2: " << typst_escape_content(doc.meta.title_okpd) << "]\n";
+                }
+                typ << "  #v(10mm)\n"
+                    << "  #grid(columns: (1fr, 1fr), gutter: 12mm,\n"
+                    << "    [\n";
+                if (!doc.meta.title_agrees.empty()) {
+                    typ << "      #strong[СОГЛАСОВАНО]\\\n";
+                    emit_sign_entry(doc.meta.title_agrees[0]);
+                }
+                typ << "    ],\n"
+                    << "    [\n";
+                if (!doc.meta.title_approves.empty()) {
+                    typ << "      #strong[УТВЕРЖДАЮ]\\\n";
+                    for (size_t ai = 0; ai < std::min<size_t>(2, doc.meta.title_approves.size()); ++ai) {
+                        emit_sign_entry(doc.meta.title_approves[ai]);
+                    }
+                }
+                typ << "    ]\n"
+                    << "  )\n"
+                    << "  #v(24mm)\n"
+                    << "  #align(center)[\n"
+                    << "    #text(size: 16pt, weight: \"bold\")[" << typst_escape_content(doc.meta.title_product) << "]\\\n"
+                    << "    #v(4mm)\n"
+                    << "    #text(size: 14pt)[" << typst_escape_content(doc.meta.title_doc_kind) << "]\\\n"
+                    << "    #v(6mm)\n"
+                    << "    #text(size: 14pt, weight: \"bold\")[" << typst_escape_content(doc.meta.code) << "]\n"
+                    << "  ]\n"
+                    << "  #v(1fr)\n"
+                    << "  #grid(columns: (1fr, 1fr), gutter: 12mm,\n"
+                    << "    [\n";
+                if (doc.meta.title_agrees.size() > 1) {
+                    typ << "      #strong[СОГЛАСОВАНО]\\\n";
+                    for (size_t gi = 1; gi < std::min<size_t>(3, doc.meta.title_agrees.size()); ++gi) {
+                        emit_sign_entry(doc.meta.title_agrees[gi]);
+                    }
+                }
+                typ << "    ],\n"
+                    << "    [\n";
+                for (size_t di = 0; di < std::min<size_t>(2, doc.meta.title_devs.size()); ++di) {
+                    emit_sign_entry(doc.meta.title_devs[di]);
+                }
+                typ << "    ]\n"
+                    << "  )\n";
+                if (title_pages > 1) {
+                    typ << "  #align(right)[#text(size: 12pt)[Продолжение на следующем листе]]\n"
+                        << "]\n"
+                        << "#pagebreak()\n"
+                        << "#block(width: 100%, height: 100%)[\n"
+                        << "  #set par(first-line-indent: 0mm)\n"
+                        << "  #align(right)[#text(size: 12pt)[Продолжение титульного листа]]\n"
+                        << "  #v(6mm)\n"
+                        << "  #align(center)[#strong[" << typst_escape_content(doc.meta.title_product) << "]\\\n"
+                        << "  " << typst_escape_content(doc.meta.code) << "]\n"
+                        << "  #v(12mm)\n"
+                        << "  #grid(columns: (1fr, 1fr), gutter: 12mm,\n"
+                        << "    [\n";
+                    if (doc.meta.title_agrees.size() > 3) {
+                        typ << "      #strong[СОГЛАСОВАНО]\\\n";
+                        for (size_t gi = 3; gi < doc.meta.title_agrees.size(); ++gi) {
+                            emit_sign_entry(doc.meta.title_agrees[gi]);
+                        }
+                    }
+                    typ << "    ],\n"
+                        << "    [\n";
+                    if (doc.meta.title_approves.size() > 2) {
+                        typ << "      #strong[УТВЕРЖДАЮ]\\\n";
+                        for (size_t ai = 2; ai < doc.meta.title_approves.size(); ++ai) {
+                            emit_sign_entry(doc.meta.title_approves[ai]);
+                        }
+                    }
+                    for (size_t di = 2; di < doc.meta.title_devs.size(); ++di) {
+                        emit_sign_entry(doc.meta.title_devs[di]);
+                    }
+                    typ << "    ]\n"
+                        << "  )\n"
+                        << "  #v(1fr)\n"
+                        << "  #align(center)[#text(size: 12pt)[" << typst_escape_content(doc.meta.title_year) << "]]\n"
+                        << "]\n"
+                        << "#pagebreak()\n\n";
+                } else {
+                    typ << "  #align(center)[#text(size: 12pt)[" << typst_escape_content(doc.meta.title_year) << "]]\n"
+                        << "]\n"
+                        << "#pagebreak()\n\n";
+                }
+            }
+        }
+
+        typ << "#place(bottom, float: true, clearance: 0mm, block(width: 100%, height: 25mm))\n\n";
+
+        if (doc.meta.has_toc) {
+            typ << "// Содержание по п. 6.2 ГОСТ Р 2.105-2019\n"
+                << "#align(center)[#par(first-line-indent: 0mm)[#text(weight: \"bold\", size: 15pt)[Содержание]]]\n"
+                << "#v(4mm)\n"
+                << "#outline(title: none, indent: 8mm, depth: 2)\n"
+                << "#v(8mm)\n\n";
+        }
+
+        const int sub_pt = std::max(9, std::clamp(doc.meta.font_pt, 11, 14) - 2);
+        const std::vector<md::GostBlockNum> bnums = md::compute_gost_numbering(doc);
+        for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
+            const md::Block& b = doc.blocks[bi];
+            const md::GostBlockNum gn = (bi < bnums.size()) ? bnums[bi] : md::GostBlockNum{};
+            if (gn.starts_new_page) {
+                typ << "#pagebreak()\n\n";
+            }
+            switch (b.type) {
+                case md::BlockType::Heading: {
+                    const int lvl = std::clamp(b.level, 1, 6);
+                    std::string eq(static_cast<size_t>(lvl), '=');
+                    std::string htxt = typst_inlines(b.inlines);
+                    while (!htxt.empty() && htxt.back() == '.') htxt.pop_back(); // ГОСТ 6.6.2: без точки в конце
+                    const std::string full_h = typst_escape_content(gn.heading_prefix) + htxt;
+                    if (gn.centered_heading) {
+                        typ << "#align(center)[#par(first-line-indent: 0mm)[" << eq << " " << full_h << "]]\n\n";
+                    } else {
+                        typ << eq << " " << full_h << "\n\n";
+                    }
+                    break;
+                }
+                case md::BlockType::Paragraph: {
+                    if (!b.inlines.empty() && b.inlines[0].text.rfind("где ", 0) == 0) {
+                        typ << "#par(first-line-indent: 0mm)[" << typst_inlines(b.inlines) << "]\n\n";
+                    } else {
+                        typ << "#par[" << typst_inlines(b.inlines) << "]\n\n";
+                    }
+                    break;
+                }
+                case md::BlockType::Quote: {
+                    // ГОСТ 6.12: примечание уменьшенным размером шрифта с абзацного отступа
+                    if (gn.note_group_header) {
+                        typ << "#par[#text(size: " << sub_pt << "pt)[Примечания]]\n\n";
+                    }
+                    typ << "#par[#text(size: " << sub_pt << "pt)["
+                        << typst_escape_content(gn.note_prefix) << typst_inlines(b.inlines) << "]]\n\n";
+                    break;
+                }
+                case md::BlockType::ListItem: {
+                    const std::string ind(static_cast<size_t>(b.depth) * 2, ' ');
+                    typ << ind << (b.ordered ? "+ " : "- ") << typst_inlines(b.inlines) << "\n";
+                    break;
+                }
+                case md::BlockType::Rule: {
+                    typ << "#pagebreak()\n\n";
+                    break;
+                }
+                case md::BlockType::Table: {
+                    const int cols = md::table_cols(b);
+                    const int rows = md::table_rows(b);
+                    if (cols > 0 && rows > 0) {
+                        const bool is_full_form = (doc.meta.form_type > 0 && bi == 0);
+                        if (is_full_form) {
+                            const char* col_spec = (doc.meta.form_type == 1 && cols == 7)
+                                ? "(6mm, 6mm, 8mm, 70mm, 63mm, 10mm, 22mm)"
+                                : (doc.meta.form_type == 2 && cols == 3)
+                                ? "(7mm, 70mm, 108mm)"
+                                : (doc.meta.form_type == 3 && cols == 7)
+                                ? "(7mm, 8mm, 70mm, 64mm, 8mm, 8mm, 20mm)"
+                                : nullptr;
+                            typ << "#pad(x: -5mm, top: -10mm)[\n"
+                                << "  #set text(size: " << sub_pt << "pt)\n"
+                                << "  #table(\n"
+                                << "    columns: " << (col_spec ? std::string(col_spec) : ("(" + std::to_string(cols) + " * (1fr,))")) << ",\n"
+                                << "    stroke: 0.5pt,\n"
+                                << "    inset: (x: 1.2mm, y: 2mm),\n";
+                            for (int r = 0; r < rows; ++r) {
+                                for (int c = 0; c < cols; ++c) {
+                                    typ << "    [" << typst_inlines(b.cells[static_cast<size_t>(r * cols + c)]) << "],\n";
+                                }
+                                if (r == 0 && rows > 1) {
+                                    typ << "    table.hline(stroke: 1.2pt),\n";
+                                }
+                            }
+                            const int pad_rows = std::max(0, 24 - rows);
+                            for (int pr = 0; pr < pad_rows; ++pr) {
+                                for (int c = 0; c < cols; ++c) {
+                                    typ << "    [#v(4mm)],\n";
+                                }
+                            }
+                            typ << "  )\n]\n\n";
+                        } else {
+                            const std::string tcap = gn.table_caption.empty() ? "Таблица" : gn.table_caption;
+                            typ << "#block(breakable: true, width: 100%)[\n"
+                                << "  #par(first-line-indent: 0mm)[#text(size: " << sub_pt << "pt)[" << typst_escape_content(tcap) << "]]\n"
+                                << "  #v(2mm)\n"
+                                << "  #set text(size: " << sub_pt << "pt)\n"
+                                << "  #table(\n"
+                                << "    columns: (" << cols << " * (1fr,)),\n"
+                                << "    rows: (auto,).at(0),\n"
+                                << "    stroke: 0.5pt,\n"
+                                << "    inset: (x: 2mm, y: 2.2mm),\n";
+                            for (int r = 0; r < rows; ++r) {
+                                for (int c = 0; c < cols; ++c) {
+                                    typ << "    [" << typst_inlines(b.cells[static_cast<size_t>(r * cols + c)]) << "],\n";
+                                }
+                                if (r == 0 && rows > 1) {
+                                    typ << "    table.hline(stroke: 1.2pt),\n";
+                                }
+                            }
+                            typ << "  )\n]\n\n";
+                        }
+                    }
+                    break;
+                }
+                case md::BlockType::CodeBlock: {
+                    std::string raw;
+                    for (const md::Inline& inl : b.inlines) raw += inl.text;
+                    const std::string& l = b.lang;
+                    if (l == "math" || l == "latex" || l == "tex") {
+                        // ГОСТ 6.10: формула по центру строки и номер справа в круглых скобках
+                        std::string png = render_visual_block_to_png(b, temp_dir, bi);
+                        typ << "#grid(columns: (1fr, auto, 1fr), align: (left, center + horizon, right + horizon),\n"
+                            << "  [],\n";
+                        if (!png.empty()) {
+                            typ << "  [#image(\"" << typst_escape_str(png) << "\", height: 14mm)],\n";
+                        } else {
+                            typ << "  [" << typst_escape_content(raw) << "],\n";
+                        }
+                        typ << "  [" << typst_escape_content(gn.formula_number) << "],\n"
+                            << ")\n\n";
+                    } else if (md::is_diagram_lang(l) || md::is_chart_text(raw)) {
+                        // ГОСТ 6.9: графический материал — рендерим в изображение для совпадения с редактором.
+                        std::string png = render_visual_block_to_png(b, temp_dir, bi);
+                        if (!png.empty()) {
+                            typ << "#block(width: 100%)[\n"
+                                << "  #align(center)[#image(\"" << typst_escape_str(png)
+                                << "\", width: 80%)]\n"
+                                << "  #v(2mm)\n"
+                                << "  #align(center)[#text(size: 10pt)["
+                                << typst_escape_content(gn.figure_caption) << "]]\n"
+                                << "]\n\n";
+                        } else {
+                            // Fallback: show code if rendering failed.
+                            typ << "#block(width: 100%)[\n"
+                                << "  #align(center)[```\n" << raw << "\n```]\n"
+                                << "  #v(2mm)\n"
+                                << "  #align(center)[#text(size: 10pt)["
+                                << typst_escape_content(gn.figure_caption) << "]]\n"
+                                << "]\n\n";
+                        }
+                    } else {
+                        typ << "```\n" << raw << "\n```\n\n";
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (doc.meta.has_lri) {
+            typ << "#pagebreak()\n"
+                << "#pad(x: -5mm, top: -10mm)[\n"
+                << "  #set text(size: 8pt)\n"
+                << "  #table(\n"
+                << "    columns: (10mm, 18mm, 18mm, 18mm, 20mm, 22mm, 25mm, 28mm, 14mm, 12mm),\n"
+                << "    align: center + horizon,\n"
+                << "    stroke: 0.5pt,\n"
+                << "    inset: 1mm,\n"
+                << "    table.cell(colspan: 10)[#text(size: 10pt)[Лист регистрации изменений]],\n"
+                << "    table.cell(rowspan: 2)[Изм.],\n"
+                << "    table.cell(colspan: 4)[Номера листов (страниц)],\n"
+                << "    table.cell(rowspan: 2)[Всего листов (страниц) в докум.],\n"
+                << "    table.cell(rowspan: 2)[№ докум.],\n"
+                << "    table.cell(rowspan: 2)[Входящий № сопроводит. докум. и дата],\n"
+                << "    table.cell(rowspan: 2)[Подп.],\n"
+                << "    table.cell(rowspan: 2)[Дата],\n"
+                << "    [изменен- ных], [заменен- ных], [новых], [аннулиро- ванных],\n"
+                << "    table.hline(stroke: 1.2pt),\n";
+            for (int r = 0; r < 27; ++r) {
+                for (int c = 0; c < 10; ++c) {
+                    typ << "    [#v(4.2mm)],\n";
+                }
+            }
+            typ << "  )\n]\n";
+        }
+        } // end else (fallback typst markup)
+
+        std::string typ_out = typ.str();
+        for (const auto& f : doc.footnotes) {
+            const std::string key = "#footnote[__FOOTNOTE_" + std::to_string(f.id) + "__]";
+            const std::string repl = "#footnote[" + typst_escape_content(f.text) + "]";
+            size_t pos = 0;
+            while ((pos = typ_out.find(key, pos)) != std::string::npos) {
+                typ_out.replace(pos, key.size(), repl);
+                pos += repl.size();
+            }
+        }
+        if (!md::write_text_file(tmp_typ, typ_out)) return false;
+
+        std::string cmd = "\"" + typst_path + "\" compile --root /";
+        if (!fonts_dir.empty()) {
+            cmd += " --font-path \"" + fonts_dir + "\"";
+        }
+        cmd += " \"" + tmp_typ + "\" \"" + out_path + "\"";
+#if defined(_WIN32)
+        std::wstring wcmd;
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, nullptr, 0);
+        if (wlen > 0) {
+            wcmd.resize(static_cast<size_t>(wlen - 1));
+            MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, &wcmd[0], wlen);
+        }
+        std::wstring full_wcmd = L"\"" + wcmd + L"\"";
+        int rc = _wsystem(full_wcmd.c_str());
+#else
+        int rc = std::system(cmd.c_str());
+#endif
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::u8path(tmp_typ), ec);
+        for (const auto& p : page_pngs) {
+            std::filesystem::remove(std::filesystem::u8path(p), ec);
+        }
+        return rc == 0 && std::filesystem::exists(std::filesystem::u8path(out_path), ec);
+    }
+
     bool export_with_pandoc(const std::string& to_fmt, const std::string& out_path) {
+        if (to_fmt == "pdf" && !typst_path.empty()) {
+            return export_gost_pdf(out_path);
+        }
         if (!has_pandoc || pandoc_path.empty()) return false;
         std::string temp_dir;
         if (char* pref = SDL_GetPrefPath("MarkedTextDown", "Editor")) {
@@ -793,7 +1667,63 @@ struct App {
             SDL_free(pref);
         }
         const std::string tmp_in = temp_dir + "export_input_tmp.md";
-        const std::string md_text = md::export_markdown(doc, true);
+        std::vector<std::string> temp_pngs;
+
+        std::string md_text;
+        if (to_fmt == "docx" || to_fmt == "odt" || to_fmt == "html5") {
+            // Рендерим каждый лист А4 со штампом, рамкой, титульным листом, содержанием,
+            // таблицами, диаграммами, графиками, формулами и сносками ровно как в редакторе.
+            temp_pngs = render_all_pages_to_png(temp_dir, 1.8f);
+            if (!temp_pngs.empty()) {
+                std::ostringstream oss;
+                for (size_t i = 0; i < temp_pngs.size(); ++i) {
+                    if (i > 0) oss << "\n\n";
+                    oss << "![](" << temp_pngs[i] << "){width=100%}";
+                }
+                oss << "\n";
+                md_text = oss.str();
+            }
+        }
+        if (md_text.empty()) {
+            // Готовим копию документа, где визуальные блоки (диаграммы/графики) заменены на PNG-рисунки с подписями по ГОСТ.
+            md::Document exp_doc = doc;
+            const std::vector<md::GostBlockNum> bnums = md::compute_gost_numbering(doc);
+            std::vector<md::Block> new_blocks;
+            for (size_t bi = 0; bi < exp_doc.blocks.size(); ++bi) {
+                md::Block b = exp_doc.blocks[bi];
+                const md::GostBlockNum gn = (bi < bnums.size()) ? bnums[bi] : md::GostBlockNum{};
+                if (b.type == md::BlockType::Heading && !gn.heading_prefix.empty() && !b.inlines.empty()) {
+                    b.inlines[0].text = gn.heading_prefix + b.inlines[0].text;
+                } else if (b.type == md::BlockType::CodeBlock) {
+                    std::string raw;
+                    for (const md::Inline& inl : b.inlines) raw += inl.text;
+                    if (md::is_diagram_lang(b.lang) || md::is_chart_text(raw)) {
+                        std::string png = render_visual_block_to_png(b, temp_dir, bi);
+                        if (!png.empty()) {
+                            temp_pngs.push_back(png);
+                            md::Block img_p;
+                            img_p.type = md::BlockType::Paragraph;
+                            md::Inline img_inl;
+                            img_inl.text = gn.figure_caption.empty() ? "Рисунок" : gn.figure_caption;
+                            img_inl.style = md::StyleLink | md::StyleImage;
+                            img_inl.href = png;
+                            img_p.inlines.push_back(std::move(img_inl));
+                            new_blocks.push_back(std::move(img_p));
+                            if (!gn.figure_caption.empty()) {
+                                md::Block cap_p;
+                                cap_p.type = md::BlockType::Paragraph;
+                                cap_p.inlines.push_back(md::Inline{gn.figure_caption, 0, ""});
+                                new_blocks.push_back(std::move(cap_p));
+                            }
+                            continue;
+                        }
+                    }
+                }
+                new_blocks.push_back(std::move(b));
+            }
+            exp_doc.blocks = std::move(new_blocks);
+            md_text = md::export_markdown(exp_doc, true);
+        }
         if (!md::write_text_file(tmp_in, md_text)) {
             return false;
         }
@@ -803,7 +1733,7 @@ struct App {
         // Strip quotes from title to keep CLI clean
         title.erase(std::remove(title.begin(), title.end(), '"'), title.end());
 
-        std::string cmd = "\"" + pandoc_path + "\" \"" + tmp_in + "\" -f gfm -t " + to_fmt
+        std::string cmd = "\"" + pandoc_path + "\" \"" + tmp_in + "\" -f markdown -t " + to_fmt
                         + " --standalone --metadata title=\"" + title + "\"";
         if (to_fmt == "pdf") {
             if (!typst_path.empty()) {
@@ -831,6 +1761,9 @@ struct App {
 #endif
         std::error_code ec;
         std::filesystem::remove(std::filesystem::u8path(tmp_in), ec);
+        for (const auto& p : temp_pngs) {
+            std::filesystem::remove(std::filesystem::u8path(p), ec);
+        }
         return rc == 0 && std::filesystem::exists(std::filesystem::u8path(out_path), ec);
     }
 
@@ -839,17 +1772,36 @@ struct App {
             std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
             return false;
         }
-        SDL_SetAppMetadata("Marked-text-down", "0.1.0", "com.marked.textdown");
+        SDL_SetAppMetadata("GOST-Writer", "1.0.0", "com.radioglitch.gostwriter");
         if (!TTF_Init()) {
             std::fprintf(stderr, "TTF_Init: %s\n", SDL_GetError());
             return false;
         }
         load_settings();
-        window = SDL_CreateWindow("Marked-text-down", 1100, 720,
+        window = SDL_CreateWindow("GOST-Writer", 1100, 720,
                                   SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
         if (!window) {
             std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
             return false;
+        }
+        {
+            std::vector<std::string> icon_paths;
+            if (const char* base = SDL_GetBasePath()) {
+                std::string b(base);
+                icon_paths.push_back(b + "packaging/icons/gw-logo-64.bmp");
+                icon_paths.push_back(b + "../packaging/icons/gw-logo-64.bmp");
+                icon_paths.push_back(b + "../share/marked-text-down/gw-logo-64.bmp");
+            }
+            icon_paths.push_back("packaging/icons/gw-logo-64.bmp");
+            icon_paths.push_back("../packaging/icons/gw-logo-64.bmp");
+            icon_paths.push_back(std::string(PROJECT_SOURCE_DIR) + "/packaging/icons/gw-logo-64.bmp");
+            for (const auto& ip : icon_paths) {
+                if (SDL_Surface* icon = SDL_LoadBMP(ip.c_str())) {
+                    SDL_SetWindowIcon(window, icon);
+                    SDL_DestroySurface(icon);
+                    break;
+                }
+            }
         }
         // The window draws its own frame and title bar; see draw_titlebar().
         SDL_SetWindowBordered(window, false);
@@ -1096,24 +2048,81 @@ struct App {
             sep();
 
             {
-                const std::vector<std::string> items = {tr("• Маркированный", "• Bulleted"),
-                                                        tr("1. Нумерованный", "1. Numbered")};
+                const std::vector<std::string> items = {
+                    tr("— Дефис (ГОСТ 6.7)", "— Dash (GOST 6.7)"),
+                    tr("1. Нумерованный", "1. Numbered"),
+                    tr("а) Буквенный (ГОСТ 6.7)", "a) Lettered (GOST 6.7)"),
+                };
                 const char* lbl = tr("Список ↓", "List ↓");
                 const Rect r = place_label(lbl);
-                const int ch = !measuring ? ui::menu(ui, "list_menu", r, lbl, items, 220.0f) : -1;
-                if (ch == 0 || ch == 1) {
-                    const bool ordered = ch == 1;
-                    if (cb.type == md::BlockType::ListItem && cb.ordered == ordered) {
+                const int ch = !measuring ? ui::menu(ui, "list_menu", r, lbl, items, 240.0f) : -1;
+                if (ch >= 0 && ch <= 2) {
+                    const bool ordered = (ch == 1 || ch == 2);
+                    const int lvl = (ch == 2) ? 2 : 0;
+                    if (cb.type == md::BlockType::ListItem && cb.ordered == ordered && cb.level == lvl) {
                         editor.set_block(md::BlockType::Paragraph, 0, false);
                     } else {
-                        editor.set_block(md::BlockType::ListItem, 0, ordered);
+                        editor.set_block(md::BlockType::ListItem, lvl, ordered);
                     }
                     mark_edited();
                     ensure_caret_visible();
                 }
             }
-            block_button("quote", tr("Цитата", "Quote"), cb.type == md::BlockType::Quote,
+            block_button("quote", tr("Примечание", "Note"), cb.type == md::BlockType::Quote,
                          md::BlockType::Quote, 0, false);
+            if (widget_button("footnote_btn", tr("Сноска", "Footnote"))) {
+                md::Pos p = editor.caret();
+                if (p.block < 0 || p.block >= static_cast<int>(doc.blocks.size())) return;
+                int fid = doc.next_footnote_id++;
+                doc.footnotes.push_back(md::Footnote{fid, tr("текст сноски", "footnote text")});
+                md::Inline marker;
+                marker.footnote_id = fid;
+                marker.text.clear();
+                md::Block& b = doc.blocks[static_cast<size_t>(p.block)];
+                auto& inls = md::inlines_of(b, p.cell);
+                if (p.inl < 0) p.inl = 0;
+                if (p.inl > static_cast<int>(inls.size())) p.inl = static_cast<int>(inls.size());
+                if (inls.empty()) {
+                    inls.push_back(md::Inline{});
+                    inls.insert(inls.begin(), marker);
+                    editor.set_caret(md::Pos{p.block, 0, 0, p.cell});
+                } else {
+                    const int cur_inl = p.inl;
+                    const int cur_off = p.offset;
+                    const int cur_text_len = static_cast<int>(inls[static_cast<size_t>(cur_inl)].text.size());
+                    int insert_at = cur_inl;
+                    if (cur_off > 0 && cur_off < cur_text_len) {
+                        // Курсор внутри текста инлайна: разбиваем его и вставляем маркер между частями.
+                        const md::Inline old = inls[static_cast<size_t>(cur_inl)];
+                        md::Inline left = old;
+                        left.text = old.text.substr(0, static_cast<size_t>(cur_off));
+                        md::Inline right = old;
+                        right.text = old.text.substr(static_cast<size_t>(cur_off));
+                        inls.erase(inls.begin() + cur_inl);
+                        inls.insert(inls.begin() + cur_inl, left);
+                        inls.insert(inls.begin() + cur_inl + 1, marker);
+                        inls.insert(inls.begin() + cur_inl + 2, right);
+                        insert_at = cur_inl + 1;
+                    } else if (cur_off >= cur_text_len) {
+                        // Курсор в конце инлайна: маркер после этого инлайна.
+                        insert_at = cur_inl + 1;
+                        if (insert_at > static_cast<int>(inls.size())) insert_at = static_cast<int>(inls.size());
+                        inls.insert(inls.begin() + insert_at, marker);
+                    } else {
+                        // cur_off == 0: маркер перед инлайном.
+                        inls.insert(inls.begin() + insert_at, marker);
+                    }
+                    // Курсор сразу после маркера.
+                    md::Pos np{p.block, insert_at, 0, p.cell};
+                    editor.set_caret(np);
+                }
+                active_footnote_id = fid;
+                footnote_editor_open = true;
+                doc_dirty = true;
+                mark_edited();
+                ensure_caret_visible();
+                history.commit(doc, editor.caret(), editor.anchor(), md::EditKind::Other);
+            }
             block_button("codeblock", tr("Блок кода", "Code block"), cb.type == md::BlockType::CodeBlock,
                          md::BlockType::CodeBlock, 0, false);
             sep();
@@ -1143,33 +2152,300 @@ struct App {
             }
             if (widget_button("vis_diag", tr("Диаграмма", "Diagram"))) diag_open_new();
             if (widget_button("vis_formula", tr("Формула", "Formula"))) formula_open_new();
+            if (widget_button("vis_gde", tr("где …", "where …"))) {
+                md::Block b;
+                b.type = md::BlockType::Paragraph;
+                b.inlines.push_back(md::Inline{
+                    en() ? "where x — parameter name, unit;" : "где x — наименование величины, ед. изм.;",
+                    0, ""});
+                const int ins = std::clamp(editor.caret().block + 1, 0, static_cast<int>(doc.blocks.size()));
+                doc.blocks.insert(doc.blocks.begin() + ins, std::move(b));
+                editor.set_caret(md::Pos{ins, 0, 0, -1});
+                mark_edited();
+                ensure_caret_visible();
+                history.commit(doc, editor.caret(), editor.anchor(), md::EditKind::Other);
+            }
             if (widget_button("vis_chart", tr("График", "Chart"))) chart_open_new();
             sep();
-            if (widget_button("rule", tr("— Линия", "— Rule"))) {
+            if (widget_button("rule", tr("Разрыв листа", "Page break"))) {
                 editor.insert_rule();
                 mark_edited();
+                ensure_caret_visible();
+            }
+            sep();
+
+            // Инструменты ГОСТ Р 2.105 (п. 5.1.1 — кегль 11..14 пт; п. 5.1.2 — интервал 1..2).
+            {
+                const std::vector<std::string> pt_items = {
+                    tr("11 пт (ГОСТ 5.1.1)", "11 pt (GOST 5.1.1)"),
+                    tr("12 пт (ГОСТ 5.1.1)", "12 pt (GOST 5.1.1)"),
+                    tr("13 пт (ГОСТ 5.1.1)", "13 pt (GOST 5.1.1)"),
+                    tr("14 пт (основной)", "14 pt (default)"),
+                };
+                const std::string pt_lbl = std::to_string(std::clamp(doc.meta.font_pt, 11, 14))
+                                         + (en() ? " pt ↓" : " пт ↓");
+                const Rect r = place_label(pt_lbl.c_str());
+                const int ch = !measuring ? ui::menu(ui, "gost_pt_menu", r, pt_lbl.c_str(), pt_items, 200.0f) : -1;
+                if (ch >= 0 && ch <= 3) {
+                    doc.meta.font_pt = 11 + ch;
+                    doc.meta.modified_meta = true;
+                    doc_dirty = true;
+                    mark_edited();
+                }
+            }
+            {
+                static const char* kLsLabels[6] = {"1,0", "1,15", "1,25", "1,5", "1,75", "2,0"};
+                const std::vector<std::string> ls_items = {
+                    tr("1,0 (одинарный)", "1.0 (single)"),
+                    "1,15",
+                    "1,25",
+                    tr("1,5 (полуторный, ГОСТ)", "1.5 (GOST default)"),
+                    "1,75",
+                    tr("2,0 (двойной)", "2.0 (double)"),
+                };
+                const int lsi = std::clamp(doc.meta.line_spacing_idx, 0, 5);
+                const std::string ls_lbl = std::string(tr("Инт. ", "Line ")) + kLsLabels[lsi] + " ↓";
+                const Rect r = place_label(ls_lbl.c_str());
+                const int ch = !measuring ? ui::menu(ui, "gost_ls_menu", r, ls_lbl.c_str(), ls_items, 220.0f) : -1;
+                if (ch >= 0 && ch <= 5) {
+                    doc.meta.line_spacing_idx = ch;
+                    doc.meta.modified_meta = true;
+                    doc_dirty = true;
+                    mark_edited();
+                }
+            }
+            if (widget_toggle("gost_title_btn", tr("Титул", "Title page"), doc.meta.has_title_page)) {
+                doc.meta.has_title_page = !doc.meta.has_title_page;
+                doc.meta.modified_meta = true;
+                doc_dirty = true;
+                mark_edited();
+                if (doc.meta.has_title_page) scroll_y = 0.0f;
+            }
+            if (widget_toggle("gost_toc_btn", tr("Содержание", "Contents"), doc.meta.has_toc)) {
+                doc.meta.has_toc = !doc.meta.has_toc;
+                doc.meta.modified_meta = true;
+                doc_dirty = true;
+                mark_edited();
+            }
+            if (widget_toggle("gost_lri_btn", tr("ЛРИ", "Change sheet"), doc.meta.has_lri)) {
+                doc.meta.has_lri = !doc.meta.has_lri;
+                doc.meta.modified_meta = true;
+                doc_dirty = true;
+                mark_edited();
+            }
+            {
+                const std::vector<std::string> num_items = {
+                    doc.meta.auto_num_headings
+                        ? tr("✓ Автонумерация разделов (1, 1.1)", "✓ Auto-number sections (1, 1.1)")
+                        : tr("  Автонумерация разделов (1, 1.1)", "  Auto-number sections (1, 1.1)"),
+                    !doc.meta.section_num_media
+                        ? tr("• Сквозная: Табл. 1, Рис. 1, (1)", "• Global: Table 1, Fig. 1, (1)")
+                        : tr("  Сквозная: Табл. 1, Рис. 1, (1)", "  Global: Table 1, Fig. 1, (1)"),
+                    doc.meta.section_num_media
+                        ? tr("• По разделам: Табл. 1.1, Рис. 1.1, (1.1)", "• By section: Table 1.1, Fig. 1.1, (1.1)")
+                        : tr("  По разделам: Табл. 1.1, Рис. 1.1, (1.1)", "  By section: Table 1.1, Fig. 1.1, (1.1)"),
+                    tr("+ Приложение (А, Б, В…)", "+ Appendix (A, B, C…)"),
+                };
+                const char* num_lbl = tr("Нумерация ↓", "Numbering ↓");
+                const Rect r = place_label(num_lbl);
+                const int ch = !measuring ? ui::menu(ui, "gost_num_menu", r, num_lbl, num_items, 290.0f) : -1;
+                if (ch == 0) {
+                    doc.meta.auto_num_headings = !doc.meta.auto_num_headings;
+                    doc.meta.modified_meta = true;
+                    doc_dirty = true;
+                    mark_edited();
+                } else if (ch == 1) {
+                    doc.meta.section_num_media = false;
+                    doc.meta.modified_meta = true;
+                    doc_dirty = true;
+                    mark_edited();
+                } else if (ch == 2) {
+                    doc.meta.section_num_media = true;
+                    doc.meta.modified_meta = true;
+                    doc_dirty = true;
+                    mark_edited();
+                } else if (ch == 3) {
+                    // Определяем очередную букву приложения по ГОСТ Р 2.105 п. 6.3.5
+                    static const char* kAppLetters[] = {
+                        "А", "Б", "В", "Г", "Д", "Е", "Ж", "И", "К", "Л", "М", "Н",
+                        "П", "Р", "С", "Т", "У", "Ф", "Х", "Ц", "Ш", "Щ", "Э", "Ю", "Я"
+                    };
+                    int app_count = 0;
+                    for (const md::Block& blk : doc.blocks) {
+                        if (blk.type == md::BlockType::Heading && !blk.inlines.empty()
+                            && blk.inlines[0].text.rfind("Приложение", 0) == 0) {
+                            ++app_count;
+                        }
+                    }
+                    const char* letter = kAppLetters[app_count % 25];
+                    md::Block h_app;
+                    h_app.type = md::BlockType::Heading;
+                    h_app.level = 1;
+                    h_app.inlines.push_back(md::Inline{std::string("Приложение ") + letter + " (обязательное)", 0, ""});
+                    const int ins = std::clamp(editor.caret().block + 1, 0, static_cast<int>(doc.blocks.size()));
+                    doc.blocks.insert(doc.blocks.begin() + ins, std::move(h_app));
+                    editor.set_caret(md::Pos{ins, 0, 0, -1});
+                    doc_dirty = true;
+                    mark_edited();
+                    ensure_caret_visible();
+                    history.commit(doc, editor.caret(), editor.anchor(), md::EditKind::Other);
+                }
             }
             sep();
 
             {
-                std::vector<std::string> items;
-                std::vector<const PTemplate*> picks;
-                for (const auto& t : kMathTemplates) {
-                    items.push_back(std::string(tr("Формула: ", "Formula: ")) + (en() ? t.label_en : t.label_ru));
-                    picks.push_back(&t);
-                }
-                for (const auto& t : kDiagramTemplates) {
-                    items.push_back(std::string(tr("Диаграмма: ", "Diagram: ")) + (en() ? t.label_en : t.label_ru));
-                    picks.push_back(&t);
-                }
-                for (const auto& t : kChartTemplates) {
-                    items.push_back(std::string(tr("График: ", "Chart: ")) + (en() ? t.label_en : t.label_ru));
-                    picks.push_back(&t);
-                }
+                std::vector<std::string> items = {
+                    tr("Документ: Пояснительная записка (ПЗ, ГОСТ Р 2.106)", "Doc: Explanatory note (PZ, GOST R 2.106)"),
+                    tr("Документ: Программа и методика испытаний (ПМ)", "Doc: Test program & procedure (PM)"),
+                    tr("Документ: Расчёт (РР, ГОСТ Р 2.106)", "Doc: Calculation (RR, GOST R 2.106)"),
+                    tr("Форма 1: Спецификация (во весь лист А4)", "Form 1: Specification (full-page A4)"),
+                    tr("Форма 4: Ведомость ссылочных документов (ВД)", "Form 4: Referenced documents list (VD)"),
+                    tr("Форма 8: Ведомость техпроекта (ТП / ЭП / ПТ)", "Form 8: Technical project list (TP)"),
+                };
+                const size_t doc_tpl_count = items.size();
                 const char* lbl = tr("Шаблоны ↓", "Templates ↓");
                 const Rect r = place_label(lbl);
-                const int ch = !measuring ? ui::menu(ui, "templates_menu", r, lbl, items, 300.0f) : -1;
-                if (ch >= 0) insert_template(*picks[static_cast<size_t>(ch)]);
+                const int ch = !measuring ? ui::menu(ui, "templates_menu", r, lbl, items, 380.0f) : -1;
+                if (ch >= 0 && static_cast<size_t>(ch) < doc_tpl_count) {
+                    const md::GostMeta prev_meta = doc.meta;
+                    if (ch == 0) {
+                        md::import_markdown(
+                            "# Введение\n\n"
+                            "Настоящая пояснительная записка разработана на основании технического задания.\n\n"
+                            "# Наименование и область применения\n\n"
+                            "Изделие предназначено для применения в составе автоматизированных систем.\n\n"
+                            "# Техническая характеристика\n\n"
+                            "| Наименование показателя | Значение |\n"
+                            "| --- | --- |\n"
+                            "| 1 Напряжение питания, В | 24 |\n"
+                            "| 2 Потребляемая мощность, Вт, не более | 15 |\n\n"
+                            "# Описание и обоснование выбранной конструкции\n\n"
+                            "Конструкция изделия выполнена в модульном исполнении.\n\n"
+                            "# Расчеты, подтверждающие работоспособность и надежность конструкции\n\n"
+                            "$$\nP = U \\cdot I\n$$\n\n"
+                            "где U — напряжение питания, В;\n\n"
+                            "# Описание организации работ с применением разрабатываемого изделия\n\n"
+                            "Эксплуатация изделия осуществляется обслуживающим персоналом.\n\n"
+                            "# Ожидаемые технико-экономические показатели\n\n"
+                            "Применение изделия снижает трудоемкость обслуживания.\n",
+                            true, doc);
+                        doc.meta = prev_meta;
+                        doc.meta.form_type = 0;
+                        doc.meta.has_title_page = true;
+                        doc.meta.has_toc = true;
+                        doc.meta.has_lri = true;
+                        doc.meta.code = "АБВГ.123456.001 ПЗ";
+                        doc.meta.name = "Пояснительная записка";
+                        doc.meta.title_doc_kind = "Пояснительная записка";
+                    } else if (ch == 1) {
+                        md::import_markdown(
+                            "# Общие положения\n\n"
+                            "Настоящая программа и методика испытаний устанавливает порядок проведения испытаний изделия.\n\n"
+                            "# Общие требования к условиям, обеспечению и проведению испытаний\n\n"
+                            "Испытания проводят в нормальных климатических условиях.\n\n"
+                            "# Требования безопасности\n\n"
+                            "К проведению испытаний допускается персонал, прошедший инструктаж.\n\n"
+                            "# Определяемые показатели (характеристики) и точность их измерений\n\n"
+                            "| Определяемый показатель | Номинальное значение | Допускаемая погрешность |\n"
+                            "| --- | --- | --- |\n"
+                            "| 1 Напряжение питания, В | 24,0 | ±0,5 |\n\n"
+                            "# Режимы испытаний изделия\n\n"
+                            "Испытания проводят в непрерывном режиме работы.\n\n"
+                            "# Методы испытаний и измерений\n\n"
+                            "Проверка параметров выполняется универсальными средствами измерений.\n\n"
+                            "# Отчетность\n\n"
+                            "Результаты испытаний оформляют протоколом испытаний.\n",
+                            true, doc);
+                        doc.meta = prev_meta;
+                        doc.meta.form_type = 0;
+                        doc.meta.has_title_page = true;
+                        doc.meta.has_toc = true;
+                        doc.meta.has_lri = true;
+                        doc.meta.code = "АБВГ.123456.001 ПМ";
+                        doc.meta.name = "Программа и методика испытаний";
+                        doc.meta.title_doc_kind = "Программа и методика испытаний";
+                    } else if (ch == 2) {
+                        md::import_markdown(
+                            "# Задача расчета\n\n"
+                            "Определение расчетных параметров надежности и теплового режима изделия.\n\n"
+                            "# Данные для расчета\n\n"
+                            "Исходные данные приведены в техническом задании.\n\n"
+                            "# Условия расчета\n\n"
+                            "Расчет выполняется для стационарного режима работы.\n\n"
+                            "# Расчет\n\n"
+                            "$$\n\\eta = \\frac{P_2}{P_1}\n$$\n\n"
+                            "где P_2 — полезная мощность, Вт;\n\n"
+                            "# Заключение\n\n"
+                            "Расчетные значения соответствуют установленным требованиям.\n",
+                            true, doc);
+                        doc.meta = prev_meta;
+                        doc.meta.form_type = 0;
+                        doc.meta.has_title_page = true;
+                        doc.meta.has_toc = false;
+                        doc.meta.has_lri = true;
+                        doc.meta.code = "АБВГ.123456.001 РР";
+                        doc.meta.name = "Расчет";
+                        doc.meta.title_doc_kind = "Расчет";
+                    } else if (ch == 3) {
+                        md::import_markdown(
+                            "| Формат | Зона | Поз. | Обозначение | Наименование | Кол. | Приме- чание |\n"
+                            "| :---: | :---: | :---: | :--- | :--- | :---: | :--- |\n"
+                            "|  |  |  |  | Документация |  |  |\n"
+                            "| А4 |  |  | АБВГ.123456.001 СБ | Сборочный чертеж |  |  |\n"
+                            "| А4 |  |  | АБВГ.123456.001 ПЗ | Пояснительная записка |  |  |\n"
+                            "|  |  |  |  | Сборочные единицы |  |  |\n"
+                            "| А4 |  | 1 | АБВГ.123456.010 | Корпус | 1 |  |\n"
+                            "|  |  |  |  | Детали |  |  |\n"
+                            "| А4 |  | 2 | АБВГ.711111.001 | Крышка | 1 |  |\n"
+                            "| А4 |  | 3 | АБВГ.711111.002 | Втулка | 2 |  |\n"
+                            "|  |  |  |  | Стандартные изделия |  |  |\n"
+                            "|  |  | 4 |  | Винт М4-6g×12.58 ГОСТ 17473-80 | 4 |  |\n"
+                            "|  |  | 5 |  | Шайба 4.65Г ГОСТ 6402-70 | 4 |  |\n",
+                            true, doc);
+                        doc.meta = prev_meta;
+                        doc.meta.form_type = 1;
+                        doc.meta.has_title_page = false;
+                        doc.meta.has_toc = false;
+                        doc.meta.code = "АБВГ.123456.001";
+                        doc.meta.name = "Изделие";
+                    } else if (ch == 4) {
+                        md::import_markdown(
+                            "| № строки | Обозначение | Наименование |\n"
+                            "| :---: | :--- | :--- |\n"
+                            "| 1 |  | Документы государственные (национальные) |\n"
+                            "| 2 | ГОСТ Р 2.105-2019 | ЕСКД. Общие требования к текстовым документам |\n"
+                            "| 3 | ГОСТ Р 2.106-2019 | ЕСКД. Текстовые документы |\n"
+                            "| 4 | ГОСТ 2.104-2006 | ЕСКД. Основные надписи |\n",
+                            true, doc);
+                        doc.meta = prev_meta;
+                        doc.meta.form_type = 2;
+                        doc.meta.has_title_page = false;
+                        doc.meta.has_toc = false;
+                        doc.meta.code = "АБВГ.123456.001 ВД";
+                        doc.meta.name = "Ведомость ссылочных документов";
+                    } else if (ch == 5) {
+                        md::import_markdown(
+                            "| № строки | Формат | Обозначение | Наименование | Кол. листов | № экз. | Приме- чание |\n"
+                            "| :---: | :---: | :--- | :--- | :---: | :---: | :--- |\n"
+                            "| 1 |  |  | Документация общая |  |  |  |\n"
+                            "| 2 |  |  | Вновь разработанная |  |  |  |\n"
+                            "| 3 | А4 | АБВГ.123456.001 ПЗ | Пояснительная записка | 12 | 1 |  |\n"
+                            "| 4 | А1 | АБВГ.123456.001 ВО | Чертеж общего вида | 1 | 1 |  |\n",
+                            true, doc);
+                        doc.meta = prev_meta;
+                        doc.meta.form_type = 3;
+                        doc.meta.has_title_page = false;
+                        doc.meta.has_toc = false;
+                        doc.meta.code = "АБВГ.123456.001 ТП";
+                        doc.meta.name = "Ведомость технического проекта";
+                    }
+                    doc.meta.modified_meta = true;
+                    editor.set_caret(md::Pos{0, 0, 0});
+                    scroll_y = 0.0f;
+                    doc_dirty = true;
+                    mark_edited();
+                    history.commit(doc, editor.caret(), editor.anchor(), md::EditKind::Other);
+                }
             }
         };
 
@@ -1210,12 +2486,7 @@ struct App {
                                        text_width(fonts.regular, tr("Тёмная", "Dark"))) + 26.0f;
         theme_rect = Rect{lang_rect.x - 6.0f - theme_w, y, theme_w, h};
 
-        float dialect_w = 0.0f;
-        for (const std::string& name : kDialects) {
-            dialect_w = std::max(dialect_w, text_width(fonts.regular, name));
-        }
-        dialect_w += 28.0f;
-        dialect_rect = Rect{theme_rect.x - 6.0f - dialect_w, y, dialect_w, h};
+        dialect_rect = Rect{};
         const char* file_lbl = tr("Файл", "File");
         file_rect = Rect{pad, y, std::max(34.0f, text_width(fonts.regular, file_lbl) + 28.0f), h};
 
@@ -1269,32 +2540,8 @@ struct App {
             welcome_open = !welcome_open;
         }
 
-        const int selected = dropdown(ui, "dialect", dialect_rect, kDialects, dialect);
-        if (selected >= 0 && selected != dialect) {
-            const int old = dialect;
-            dialect = selected;
-            status = tr("Диалект изменён", "Dialect changed");
-            // When switching to CommonMark, convert tables to raw pipe paragraphs so user sees
-            // they don't work. When switching to GFM, try to convert pipe paragraphs back to tables.
-            if (dialect == 0 && old == 1) {
-                md::tables_to_paragraphs(doc, true);
-                doc_dirty = true;
-                mark_edited();
-                editor.set_caret(editor.caret());
-                history.commit(doc, editor.caret(), editor.anchor(), md::EditKind::Other);
-            } else if (dialect == 1 && old == 0) {
-                if (md::paragraphs_to_tables(doc)) {
-                    doc_dirty = true;
-                    mark_edited();
-                    editor.set_caret(md::Pos{0,0,0});
-                    history.commit(doc, editor.caret(), editor.anchor(), md::EditKind::Other);
-                }
-            }
-            // rebuild layout next frame
-        }
-
         const float left_end = file_rect.x + file_rect.w + 12.0f;
-        const float right_start = dialect_rect.x - 12.0f;
+        const float right_start = theme_rect.x - 12.0f;
         const float avail = right_start - left_end;
         if (avail > 40.0f) {
             const std::string title = fit_text(fonts.regular,
@@ -1763,6 +3010,18 @@ void handle_key(const SDL_KeyboardEvent& key) {
                     }
                 }
                 break;
+            case SDLK_EQUALS:
+            case SDLK_KP_PLUS:
+                if (ctrl) zoom_to(zoom + 0.1f, doc_viewport.y + doc_viewport.h * 0.5f);
+                break;
+            case SDLK_MINUS:
+            case SDLK_KP_MINUS:
+                if (ctrl) zoom_to(zoom - 0.1f, doc_viewport.y + doc_viewport.h * 0.5f);
+                break;
+            case SDLK_0:
+            case SDLK_KP_0:
+                if (ctrl) zoom_to(1.0f, doc_viewport.y + doc_viewport.h * 0.5f);
+                break;
             default: break;
         }
     }
@@ -1770,7 +3029,7 @@ void handle_key(const SDL_KeyboardEvent& key) {
     // Changes the document zoom, arming an anchor so the document point under
     // the cursor stays put after the relayout.
     void zoom_to(float new_zoom, float cursor_y) {
-        new_zoom = std::clamp(new_zoom, 0.5f, 2.0f);
+        new_zoom = std::clamp(new_zoom, 0.3f, 2.5f);
         if (new_zoom == zoom) return;
         if (doc_viewport.h > 0.0f
             && cursor_y >= doc_viewport.y && cursor_y <= doc_viewport.y + doc_viewport.h) {
@@ -2258,6 +3517,9 @@ void handle_key(const SDL_KeyboardEvent& key) {
             if (y + row_h > side.y + side.h) break;
             const Rect row{side.x + 6.0f, y, side.w - 13.0f, row_h};
             std::string title;
+            if (bi < layout.block_nums.size() && !layout.block_nums[bi].heading_prefix.empty()) {
+                title += layout.block_nums[bi].heading_prefix;
+            }
             for (const md::Inline& inl : block.inlines) title += inl.text;
             if (title.empty()) title = tr("(пустой заголовок)", "(empty heading)");
             const float indent = 8.0f + (std::clamp(block.level, 1, 6) - 1) * 12.0f;
@@ -2318,18 +3580,21 @@ void handle_key(const SDL_KeyboardEvent& key) {
 
     void draw_workspace() {
         using namespace ui;
+        // Зарезервировать место снизу, если открыта панель редактирования сноски,
+        // чтобы текст документа не заходил под панель.
+        float fn_reserve = footnote_editor_open ? 200.0f : 0.0f;
         Rect area{0, toolbar_h, static_cast<float>(width),
-                  static_cast<float>(height) - toolbar_h - 28.0f};
+                  static_cast<float>(height) - toolbar_h - 28.0f - fn_reserve};
         ui::fill_rect(ui, area, ui.palette.window_bg);
         if (outline_open) {
-            draw_outline(Rect{area.x, area.y, kOutlineW, area.h});
             area.x += kOutlineW;
             area.w -= kOutlineW;
         }
 
         const float doc_zoom = text_zoom();
-        const float content_w = std::min(750.0f * window_scale(), area.w - 64.0f);
-        const float content_x = area.x + (area.w - content_w) / 2.0f;
+        const float content_w = 700.0f * doc_zoom;
+        const float mm = content_w / 175.0f;
+        const float content_x = area.x + (area.w - content_w) / 2.0f + 7.5f * mm;
         // The find bar sits above the document and pushes the text down.
         const float top = find_open ? 8.0f + (find_replace_mode ? 76.0f : 36.0f) + 8.0f : 24.0f;
         const Rect viewport{content_x, area.y + top, content_w, area.h - top - 24.0f};
@@ -2338,6 +3603,7 @@ void handle_key(const SDL_KeyboardEvent& key) {
         const md::MathReveal reveal = md::math_reveal_at(doc, editor.caret());
         if (!(reveal == math_reveal_shown)) doc_dirty = true;
         if (content_w != laid_out_width || doc_zoom != laid_out_zoom || doc_dirty) {
+            fontbook.set_base_pt(doc.meta.font_pt);
             fontbook.set_zoom(doc_zoom);
             md::layout_document(doc, fontbook, content_w, layout, reveal);
             math_reveal_shown = reveal;
@@ -2368,7 +3634,13 @@ void handle_key(const SDL_KeyboardEvent& key) {
         }
         view.caret_visible = (SDL_GetTicks() - editor.blink_tick) % 1060 < 530;
         view.caret = editor.caret();
+        view.active_stamp_field = active_stamp_field;
+        view.active_target = active_stamp_target;
+        view.stamp_slots = &stamp_slots;
         md::render_document(ui, doc, layout, fontbook, viewport, scroll_y, &view);
+        if (outline_open) {
+            draw_outline(Rect{0.0f, area.y, kOutlineW, area.h});
+        }
         if (find_open) draw_find_bar(content_x, area.y + 8.0f, content_w, find_replace_mode);
 
         // Code blocks carry a language menu in their header strip.
@@ -2415,7 +3687,7 @@ void handle_key(const SDL_KeyboardEvent& key) {
         const float y = static_cast<float>(height) - 28.0f;
         ui::fill_rect(ui, {0, y, static_cast<float>(width), 28.0f}, ui.palette.panel_bg);
         ui::fill_rect(ui, {0, y, static_cast<float>(width), 1.0f}, ui.palette.panel_border);
-        std::string right = kDialects[dialect] + "  ·  UTF-8";
+        std::string right = std::string(tr("ГОСТ Р 2.105–2019 · А4", "GOST R 2.105–2019 · A4")) + "  ·  UTF-8";
         right = std::string(tr("Слов: ", "Words: ")) + std::to_string(word_count) + "  ·  " + right;
         if (zoom != 1.0f) {
             char zbuf[16];
@@ -3170,13 +4442,93 @@ void handle_key(const SDL_KeyboardEvent& key) {
         chart_editor_open = false;
     }
 
+    void draw_footnote_editor() {
+        if (!footnote_editor_open || active_footnote_id <= 0) return;
+        using namespace ui;
+        const float w = static_cast<float>(width);
+        const float ow = std::min(680.0f, w - 40.0f);
+        const float oh = 150.0f;
+        const float ox = (w - ow) / 2.0f;
+        const float oy = static_cast<float>(height) - oh - 22.0f - 20.0f;
+        ui::fill_rounded_rect(ui, {ox, oy, ow, oh}, 10.0f, ui.palette.panel_bg);
+        ui::stroke_rect(ui, {ox, oy, ow, oh}, ui.palette.panel_border);
+        ui::draw_text(ui, fonts.bold, tr("Сноска (ГОСТ Р 2.105 п. 6.13)", "Footnote (GOST R 2.105 6.13)"),
+                      ox + 16.0f, oy + 10.0f, ui.palette.text);
+
+        std::string* ftxt = nullptr;
+        for (auto& f : doc.footnotes) {
+            if (f.id == active_footnote_id) { ftxt = &f.text; break; }
+        }
+        if (!ftxt) {
+            footnote_editor_open = false;
+            active_footnote_id = 0;
+            return;
+        }
+        const Rect box{ox + 16.0f, oy + 40.0f, ow - 32.0f, 70.0f};
+        ui::fill_rect(ui, box, ui.palette.window_bg);
+        ui::stroke_rect(ui, box, ui.palette.panel_border);
+        std::string shown = *ftxt;
+        while (!shown.empty() && ui::text_width(fonts.regular, shown) > box.w - 24.0f) {
+            shown.erase(shown.begin());
+        }
+        const Uint64 t = SDL_GetTicks();
+        ui::draw_text(ui, fonts.regular, shown + ((t % 1000) < 500 ? "|" : ""),
+                      box.x + 8.0f, box.y + 10.0f, ui.palette.text);
+        if (ui::button(ui, "fn_close", {ox + ow - 110.0f, oy + oh - 36.0f, 94.0f, 28.0f}, tr("Готово", "Done"))) {
+            footnote_editor_open = false;
+            active_footnote_id = 0;
+        }
+        if (ui::button(ui, "fn_delete", {ox + ow - 212.0f, oy + oh - 36.0f, 94.0f, 28.0f}, tr("Удалить сноску", "Delete Footnote"))) {
+            // Удаляем запись сноски и все маркеры в тексте с этим footnote_id.
+            for (auto it = doc.footnotes.begin(); it != doc.footnotes.end(); ++it) {
+                if (it->id == active_footnote_id) {
+                    doc.footnotes.erase(it);
+                    break;
+                }
+            }
+            // Удаляем маркеры сноски из всех блоков (включая ячейки таблиц).
+            for (auto& b : doc.blocks) {
+                auto remove_fn = [&](std::vector<md::Inline>& inls) {
+                    for (auto it2 = inls.begin(); it2 != inls.end(); ) {
+                        if (it2->footnote_id == active_footnote_id && it2->text.empty()) {
+                            it2 = inls.erase(it2);
+                        } else {
+                            ++it2;
+                        }
+                    }
+                };
+                remove_fn(b.inlines);
+                if (b.type == md::BlockType::Table) {
+                    for (auto& cell : b.cells) remove_fn(cell);
+                }
+            }
+            // Нормализуем пустые инлайны (оставляем хотя бы один в блоке).
+            for (auto& b : doc.blocks) {
+                auto& inls = b.inlines;
+                if (inls.empty()) inls.push_back(md::Inline{});
+                if (b.type == md::BlockType::Table) {
+                    for (auto& cell : b.cells) {
+                        if (cell.empty()) cell.push_back(md::Inline{});
+                    }
+                }
+            }
+            footnote_editor_open = false;
+            active_footnote_id = 0;
+            doc_dirty = true;
+            mark_edited();
+            ensure_caret_visible();
+        }
+        ui::draw_text(ui, fonts.regular, tr("Текст сноски редактируется здесь, маркер N) остаётся только в основном тексте", "Edit footnote text here; only marker N) shown in main text"),
+                      ox + 16.0f, oy + oh - 28.0f, ui.palette.text_dim);
+    }
+
     void draw_chart_editor() {
         if (!chart_editor_open) return;
         using namespace ui;
         const float w = static_cast<float>(width);
         const float h = static_cast<float>(height);
         const float ow = w - 40.0f;
-        const float oh = std::min(470.0f, h - toolbar_h - 40.0f);
+        const float oh = std::min(560.0f, h - toolbar_h - 40.0f);
         const float ox = 20.0f;
         const float oy = toolbar_h + 20.0f;
         ui::fill_rounded_rect(ui, {ox, oy, ow, oh}, 10.0f, ui.palette.panel_bg);
@@ -3246,9 +4598,13 @@ void handle_key(const SDL_KeyboardEvent& key) {
         md::chartdraw::Selection sel;
         sel.index = chart_sel;
         sel.value = chart_sel_value;
+        // The chart must fit between the top of the canvas and the hint line,
+        // otherwise the category/value slots end up outside the clipped area.
+        const float chart_max_h = std::max(60.0f, canvas.h - 26.0f);
         md::chartdraw::render(&ui, fontbook, chart_edit,
                               canvas.x + 14.0f, canvas.y + 6.0f, canvas.w - 28.0f,
-                              chart_sel >= 0 ? &sel : nullptr, &chart_slots);
+                              chart_sel >= 0 ? &sel : nullptr, &chart_slots,
+                              chart_max_h);
         SDL_SetRenderClipRect(ui.renderer, nullptr);
         ui::draw_text(ui, fonts.regular,
                   tr("Клик по категории/значению — выбор, ввод — текст, Tab — следующий, Delete — удалить/очистить ряд, Esc — закрыть",
@@ -3302,6 +4658,7 @@ void handle_key(const SDL_KeyboardEvent& key) {
         draw_formula_editor();
         draw_link_dialog();
         draw_diag_editor();
+        draw_footnote_editor();
         draw_chart_editor();
         auto wrap_lines = [&](TTF_Font* fnt, const std::string& s, float maxw) {
             std::vector<std::string> out;
@@ -3360,7 +4717,7 @@ void handle_key(const SDL_KeyboardEvent& key) {
             ui::fill_rounded_rect(ui, bg, 8.0f, ui.palette.panel_bg);
             ui::stroke_rect(ui, bg, ui.palette.panel_border);
             ui::draw_text(ui, fonts.bold,
-                          tr("Дополнения Pandoc", "Pandoc Extensions"),
+                          tr("Справка по ГОСТ и экспорту", "GOST & Export Help"),
                           bg.x+16.0f, bg.y+10.0f, ui.palette.text);
             if (ui::button(ui, "ph_close", Rect{bg.x+w-96.0f, bg.y+8.0f, 80.0f, 26.0f},
                            tr("Закрыть", "Close"))) {
@@ -3369,8 +4726,8 @@ void handle_key(const SDL_KeyboardEvent& key) {
             float y = bg.y + 46.0f;
             {
                 std::string txt = tr(
-                    "Формулы, диаграммы и графики вставляются кнопками «Формула», «Диаграмма» и «График» на панели, готовые примеры — в меню «Шаблоны ↓». Экспорт в DOCX, PDF, HTML, ODT и EPUB — в меню «Файл» → «Экспорт ›». Через Pandoc поддержка зависит от целевого формата и движка, а сайты и программы поддерживают разный набор расширений.",
-                    "Formulas, diagrams and charts are inserted with the Formula, Diagram and Chart buttons on the toolbar; ready-made examples are under Templates ↓. Export to DOCX, PDF, HTML, ODT and EPUB is in the File menu → Export ›. Via Pandoc, support depends on the target format and engine, and websites and apps support different extensions.");
+                    "GOST-Writer оформляет текстовые конструкторские документы по ГОСТ Р 2.105–2019 и ГОСТ Р 2.106–2019 (ЕСКД): рамка А4 185×287 мм, основная надпись Форма 2 и Форма 2а (ГОСТ 2.104), титульный лист, автосодержание, полностраничные формы (Спецификация, ВД, ТП/ЭП/ПТ) и Лист регистрации изменений (ГОСТ 2.503). Экспорт в PDF (Typst) и DOCX/ODT/HTML (Pandoc) переносит свёрстанные листы 1:1 с экраном.",
+                    "GOST-Writer formats technical text documents per GOST R 2.105–2019 and GOST R 2.106–2019 (ESKD): A4 185×287 mm frame, Form 2 & Form 2a stamps (GOST 2.104), title page, auto-TOC, full-page tabular forms (Specification, VD, TP/EP/PT) and Change Sheet (GOST 2.503). Export to PDF (Typst) and DOCX/ODT/HTML (Pandoc) preserves the A4 sheets 1:1.");
                 auto lines = wrap_lines(fonts.regular, txt, w - 32.0f);
                 for (auto& l : lines) {
                     ui::draw_text(ui, fonts.regular, l, bg.x+16.0f, y, ui.palette.text);
@@ -3423,8 +4780,8 @@ void handle_key(const SDL_KeyboardEvent& key) {
             ui::stroke_rect(ui, bg, ui.palette.panel_border);
 
             ui::draw_text(ui, fonts.bold,
-                          tr("Добро пожаловать в Marked-text-down",
-                             "Welcome to Marked-text-down"),
+                          tr("Добро пожаловать в GOST-Writer",
+                             "Welcome to GOST-Writer"),
                           bg.x + 20.0f, bg.y + 14.0f, ui.palette.text);
             if (ui::button(ui, "wel_lang", Rect{bg.x + w - 150.0f, bg.y + 10.0f, 48.0f, 28.0f},
                            en() ? "RU" : "EN")) {
@@ -3438,8 +4795,8 @@ void handle_key(const SDL_KeyboardEvent& key) {
             float y = bg.y + 50.0f;
             {
                 std::string intro = tr(
-                    "Лёгкий визуальный (WYSIWYG) редактор Markdown. Вы работаете с живым отформатированным документом без служебной разметки на экране, а на диске сохраняется чистый .md-файл.",
-                    "A lightweight visual (WYSIWYG) Markdown editor. You work directly with formatted text and visual objects without raw code on screen, while saving clean standard .md files.");
+                    "Редактор текстовых документов на базе Markdown с оформлением по ГОСТ Р 2.105–2019 и ГОСТ Р 2.106–2019 (ЕСКД). Позволяет готовить пояснительные записки, спецификации, ведомости и отчёты на листах А4 с рамкой и основной надписью.",
+                    "A Markdown-based document editor compliant with GOST R 2.105–2019 and GOST R 2.106–2019 (ESKD). Prepare explanatory notes, specifications, schedules and reports on A4 sheets with frames and stamps.");
                 for (const auto& l : wrap_lines(fonts.regular, intro, w - 40.0f)) {
                     ui::draw_text(ui, fonts.regular, l, bg.x + 20.0f, y, ui.palette.text);
                     y += 19.0f;
@@ -3454,30 +4811,30 @@ void handle_key(const SDL_KeyboardEvent& key) {
                 const char* desc_en;
             };
             static const Feature feats[] = {
-                {"Живое форматирование",
-                 "Live Formatting",
-                 "Жирный (Ctrl+B), курсив (Ctrl+I), зачёркнутый, код (Ctrl+E), заголовки H₁–H₃ (Ctrl+1…3), списки, цитаты и линии. Ссылки и формулы в строке: $E = mc^2$.",
-                 "Bold (Ctrl+B), italic (Ctrl+I), strikethrough, code (Ctrl+E), headings H₁–H₃ (Ctrl+1…3), lists, quotes and rules. Links and inline formulas: $E = mc^2$."},
-                {"Формулы, диаграммы и графики",
-                 "Formulas, Diagrams & Charts",
-                 "Кнопки «Формула», «Диаграмма» и «График» вставляют визуальные блоки, «Шаблоны ↓» дают готовые примеры. Клик по блоку открывает его конструктор.",
-                 "The Formula, Diagram and Chart buttons insert visual blocks, Templates ↓ gives ready examples. Click a block to open its editor."},
-                {"Таблицы и списки",
-                 "Tables & Lists",
-                 "Таблица вставляется кнопкой «Таблица» (диалект GFM). В таблице меню «Таблица ↓» управляет строками, столбцами и выравниванием.",
-                 "The Table button inserts a table (GFM dialect). Inside a table, the Table ↓ menu manages rows, columns and alignment."},
-                {"Поиск, оглавление и масштаб",
-                 "Find, Outline & Zoom",
-                 "Поиск и замена: Ctrl+F и Ctrl+H. Оглавление: Ctrl+Shift+T. Масштаб документа: Ctrl и колесо мыши, от 50% до 200%.",
-                 "Find and replace: Ctrl+F and Ctrl+H. Outline: Ctrl+Shift+T. Document zoom: Ctrl and the mouse wheel, from 50% to 200%."},
-                {"Файлы и экспорт",
-                 "Files & Export",
-                 "Автосохранение с восстановлением, недавние файлы в меню «Файл». Экспорт в DOCX, PDF, HTML, ODT и EPUB: «Файл» → «Экспорт ›» (нужен Pandoc).",
-                 "Autosave with restore, recent files in the File menu. Export to DOCX, PDF, HTML, ODT and EPUB: File → Export › (needs Pandoc)."},
-                {"Темы и языки",
-                 "Themes & Languages",
-                 "Светлая и тёмная темы, интерфейс на русском и английском. Диалект Markdown определяется автоматически при открытии файла.",
-                 "Light and dark themes, Russian and English interface. The Markdown dialect is detected automatically when a file is opened."},
+                {"Лист А4, рамка и штамп ГОСТ",
+                 "A4 Sheet, Frame & GOST Stamp",
+                 "Рамка 185×287 мм, боковой штамп, Форма 2 на первом текстовом листе и Форма 2а на последующих. Поля штампа и титульного листа редактируются кликом.",
+                 "185×287 mm frame, side stamp, Form 2 on the first text sheet and Form 2a on subsequent sheets. Click any stamp or title field to edit."},
+                {"Титульный лист, содержание и ЛРИ",
+                 "Title Page, TOC & Change Sheet",
+                 "Кнопки «Титул», «Содержание» и «ЛРИ» включают титульный лист (в т.ч. по ЛУ), автосодержание с отточием и номерами листов и Лист регистрации изменений.",
+                 "The Title, TOC and LRI buttons toggle the title page (including by LU), auto-TOC with dot leaders and sheet numbers, and the Change Registration Sheet."},
+                {"Шаблоны документов ЕСКД",
+                 "ESKD Document Templates",
+                 "Меню «Шаблоны ↓»: Пояснительная записка (ПЗ), Спецификация, Ведомость держателей подлинников (ВД), ТП / ЭП / ПТ, Технические условия (ТУ) и РЭ.",
+                 "Templates ↓ menu: Explanatory Note (PZ), Specification, Original Holders Schedule (VD), TP / EP / PT tables, Technical Conditions (TU) and Manual (RE)."},
+                {"Формулы, диаграммы, графики и сноски",
+                 "Formulas, Diagrams, Charts & Footnotes",
+                 "Визуальные конструкторы формул (с автонумерацией), чёрно-белых схем и графиков («Рисунок N»), таблиц («Таблица N») и постраничных сносок («Сноска»).",
+                 "Visual editors for numbered formulas, B&W diagrams and charts ('Figure N'), tables ('Table N') and per-page footnotes ('Footnote')."},
+                {"Прямой экспорт в ГОСТ PDF и DOCX",
+                 "Direct GOST PDF & DOCX Export",
+                 "Меню «Файл» → «Экспорт ›»: печать в PDF (через встроенный Typst) и экспорт в DOCX/ODT/HTML/EPUB (через встроенный Pandoc) один в один с экраном.",
+                 "File → Export ›: print-ready PDF (via bundled Typst) and DOCX/ODT/HTML/EPUB export (via bundled Pandoc) matching the on-screen A4 sheet."},
+                {"Удобство работы",
+                 "Convenient Workflow",
+                 "Поиск и замена (Ctrl+F / Ctrl+H), оглавление (Ctrl+Shift+T), физический масштаб листа А4 (Ctrl+колесо), автосохранение, светлая и тёмная темы, RU/EN.",
+                 "Find & replace (Ctrl+F / Ctrl+H), outline (Ctrl+Shift+T), physical A4 zoom (Ctrl+wheel), autosave recovery, light and dark themes, RU/EN."},
             };
 
             for (const auto& f : feats) {
@@ -3614,12 +4971,97 @@ void handle_key(const SDL_KeyboardEvent& key) {
                         }
                         break;
                     }
+                    if (!ui::pointer_over_popup(ui) && !formula_editor_open
+                        && !diag_editor_open && !chart_editor_open
+                        && !welcome_open && !pandoc_help_open
+                        && e.button.y >= doc_viewport.y && e.button.y <= doc_viewport.y + doc_viewport.h) {
+                        bool hit_stamp = false;
+                        for (const md::StampSlot& s : stamp_slots) {
+                            if (ui::contains(s.rect, e.button.x, e.button.y)) {
+                                if (s.action > 0) {
+                                    if (s.action == 1) {
+                                        doc.meta.title_agrees.push_back(md::TitleSign{"Должность", "И.О. Фамилия", "01.09.2026"});
+                                    } else if (s.action == 2 && !doc.meta.title_agrees.empty()) {
+                                        doc.meta.title_agrees.pop_back();
+                                    } else if (s.action == 3) {
+                                        doc.meta.title_approves.push_back(md::TitleSign{"Должность", "И.О. Фамилия", "01.09.2026"});
+                                    } else if (s.action == 4 && !doc.meta.title_approves.empty()) {
+                                        doc.meta.title_approves.pop_back();
+                                    } else if (s.action == 5) {
+                                        doc.meta.title_devs.push_back(md::TitleSign{"Должность", "И.О. Фамилия", "01.09.2026"});
+                                    } else if (s.action == 6 && !doc.meta.title_devs.empty()) {
+                                        doc.meta.title_devs.pop_back();
+                                    } else if (s.action == 7) {
+                                        doc.meta.title_by_lu = !doc.meta.title_by_lu;
+                                    }
+                                    clear_stamp_focus();
+                                    doc.meta.modified_meta = true;
+                                    doc_dirty = true;
+                                    mark_edited();
+                                    dragging = false;
+                                    hit_stamp = true;
+                                    break;
+                                }
+                                active_stamp_field = s.field;
+                                active_stamp_target = s.target;
+                                find_focus = false;
+                                editor.blink_tick = SDL_GetTicks();
+                                dragging = false;
+                                hit_stamp = true;
+                                break;
+                            }
+                        }
+                        if (hit_stamp) break;
+                    }
                     if (ui::contains(doc_viewport, e.button.x, e.button.y)
                         && !ui::pointer_over_popup(ui) && !formula_editor_open
                         && !diag_editor_open && !chart_editor_open
                         && !welcome_open && !pandoc_help_open) {
-                        // A click on a formula/diagram/chart block opens the visual editor.
+                        clear_stamp_focus();
                         const float cy = e.button.y - doc_viewport.y + scroll_y;
+                        // Клик по строке автоматического «Содержания» переходит к выбранному разделу.
+                        bool hit_toc = false;
+                        for (const md::TocEntry& te : layout.toc_entries) {
+                            if (cy >= te.y && cy <= te.y + te.height
+                                && te.block >= 0 && static_cast<size_t>(te.block) < doc.blocks.size()) {
+                                editor.set_caret(md::Pos{te.block, 0, 0, -1});
+                                ensure_caret_visible();
+                                dragging = false;
+                                hit_toc = true;
+                                break;
+                            }
+                        }
+                        if (hit_toc) break;
+
+                        // Клик по маркеру сноски «N)» в основном тексте — открыть
+                        // панель редактирования текста этой сноски (п. 6.13 ГОСТ Р 2.105).
+                        {
+                            const float cy = e.button.y - doc_viewport.y + scroll_y;
+                            for (const md::Line& line : layout.lines) {
+                                if (cy < line.y - 8.0f || cy > line.y + line.height + 8.0f)
+                                    continue;
+                                for (const md::Span& span : line.spans) {
+                                    if (span.footnote_id <= 0) continue;
+                                    const float sx = doc_viewport.x + span.x;
+                                    if (e.button.x >= sx - 2.0f
+                                        && e.button.x <= sx + span.width + 2.0f
+                                        && e.button.y >= doc_viewport.y + line.y - 8.0f
+                                        && e.button.y <= doc_viewport.y + line.y + line.height + 8.0f) {
+                                        for (const auto& f : doc.footnotes) {
+                                            if (f.id == span.footnote_id) {
+                                                active_footnote_id = f.id;
+                                                footnote_editor_open = true;
+                                                break;
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                                if (footnote_editor_open) break;
+                            }
+                        }
+
+                        // A click on a formula/diagram/chart block opens the visual editor.
                         int hit = -1;
                         for (size_t i = 0; i < doc.blocks.size() && i < layout.boxes.size(); ++i) {
                             const auto& box = layout.boxes[i];
@@ -3825,8 +5267,27 @@ void handle_key(const SDL_KeyboardEvent& key) {
                     diag_insert_text(e.text.text);
                     break;
                 }
+                if (footnote_editor_open && active_footnote_id > 0) {
+                    for (auto& f : doc.footnotes) {
+                        if (f.id == active_footnote_id) {
+                            f.text += e.text.text;
+                            doc_dirty = true;
+                            break;
+                        }
+                    }
+                    break;
+                }
                 if (chart_editor_open) {
                     chart_insert_text(e.text.text);
+                    break;
+                }
+                if (is_editing_stamp()) {
+                    if (std::string* sf = stamp_field_str(active_stamp_field)) {
+                        *sf += e.text.text;
+                        doc.meta.modified_meta = true;
+                        editor.blink_tick = SDL_GetTicks();
+                        mark_edited();
+                    }
                     break;
                 }
                 editor.insert_text(e.text.text);
@@ -3836,6 +5297,41 @@ void handle_key(const SDL_KeyboardEvent& key) {
             case SDL_EVENT_KEY_DOWN:
                 if (e.key.key == SDLK_F1) {
                     welcome_open = !welcome_open;
+                    break;
+                }
+                if (footnote_editor_open && active_footnote_id > 0) {
+                    if (e.key.key == SDLK_BACKSPACE) {
+                        for (auto& f : doc.footnotes) {
+                            if (f.id == active_footnote_id) {
+                                if (!f.text.empty() && f.text.size() > 1) {
+                                    // Удаляем последний UTF-8 символ, а не один байт.
+                                    size_t cut = f.text.size() - 1;
+                                    while (cut > 0 && (static_cast<unsigned char>(f.text[cut]) & 0xC0) == 0x80) {
+                                        --cut;
+                                    }
+                                    f.text.erase(cut);
+                                }
+                                doc_dirty = true;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                    if (e.key.key == SDLK_ESCAPE) {
+                        footnote_editor_open = false;
+                        active_footnote_id = 0;
+                        break;
+                    }
+                    break;
+                }
+                if (footnote_editor_open && active_footnote_id > 0) {
+                    for (auto& f : doc.footnotes) {
+                        if (f.id == active_footnote_id) {
+                            f.text += e.text.text;
+                            doc_dirty = true;
+                            break;
+                        }
+                    }
                     break;
                 }
                 if (link_open) {
@@ -3868,6 +5364,10 @@ void handle_key(const SDL_KeyboardEvent& key) {
                     if (chart_editor_open) {
                         chart_editor_open = false;
                         status = tr("Редактор графика закрыт", "Chart editor closed");
+                        break;
+                    }
+                    if (is_editing_stamp()) {
+                        clear_stamp_focus();
                         break;
                     }
                     ui.open_popup.clear();
@@ -4028,6 +5528,45 @@ void handle_key(const SDL_KeyboardEvent& key) {
                     }
                     break;
                 }
+                if (is_editing_stamp()) {
+                    const bool shift = (e.key.mod & SDL_KMOD_SHIFT) != 0;
+                    const bool ctrl = (e.key.mod & SDL_KMOD_CTRL) != 0;
+                    if (ctrl && e.key.key == SDLK_S) {
+                        if (shift) save_as();
+                        else save();
+                        break;
+                    }
+                    if (ctrl && e.key.key == SDLK_Z) {
+                        apply_history(shift);
+                        break;
+                    }
+                    if (ctrl && e.key.key == SDLK_Y) {
+                        apply_history(true);
+                        break;
+                    }
+                    switch (e.key.key) {
+                        case SDLK_BACKSPACE:
+                            if (std::string* sf = stamp_field_str(active_stamp_field)) {
+                                if (!sf->empty()) {
+                                    const int prev = md::prev_char(*sf, static_cast<int>(sf->size()));
+                                    sf->erase(static_cast<size_t>(prev));
+                                    doc.meta.modified_meta = true;
+                                    editor.blink_tick = SDL_GetTicks();
+                                    mark_edited();
+                                }
+                            }
+                            break;
+                        case SDLK_TAB:
+                            step_stamp_field(shift ? -1 : 1);
+                            break;
+                        case SDLK_RETURN:
+                        case SDLK_KP_ENTER:
+                            step_stamp_field(1);
+                            break;
+                        default: break;
+                    }
+                    break;
+                }
                 handle_key(e.key);
                 break;
             case SDL_EVENT_MOUSE_WHEEL: {
@@ -4164,48 +5703,8 @@ int main(int argc, char** argv) {
         std::printf("selftest frame ok: %dx%d, screenshot %s\n", app.width, app.height,
                     screenshot.c_str());
 
-        // Synthetic click on the dialect dropdown: press, release, then let the
-        // deferred popup render.
-        const float dx = app.dialect_rect.x + app.dialect_rect.w - 25.0f;
-        const float dy = app.dialect_rect.y + app.dialect_rect.h / 2.0f;
-        push_mouse_event(SDL_EVENT_MOUSE_MOTION, dx, dy);
-        push_mouse_event(SDL_EVENT_MOUSE_BUTTON_DOWN, dx, dy);
-        pump();
-        app.frame();
-        push_mouse_event(SDL_EVENT_MOUSE_BUTTON_UP, dx, dy);
-        pump();
-        app.frame();
-        if (app.ui.open_popup != "dialect") {
-            std::fprintf(stderr, "selftest: dropdown did not open\n");
-            app.shutdown();
-            return 1;
-        }
         const auto dot = screenshot.find_last_of('.');
-        const std::string popup_path = dot == std::string::npos
-            ? screenshot + "_popup"
-            : screenshot.substr(0, dot) + "_popup" + screenshot.substr(dot);
-        if (!save_frame(popup_path)) {
-            app.shutdown();
-            return 1;
-        }
-        std::printf("selftest dropdown ok: screenshot %s\n", popup_path.c_str());
-
-        // Click the second item ("GitHub Flavored Markdown").
-        const float item_x = app.dialect_rect.x + app.dialect_rect.w / 2.0f;
-        const float item_y = app.dialect_rect.y + app.dialect_rect.h + 4.0f + 32.0f + 16.0f;
-        push_mouse_event(SDL_EVENT_MOUSE_MOTION, item_x, item_y);
-        push_mouse_event(SDL_EVENT_MOUSE_BUTTON_DOWN, item_x, item_y);
-        pump();
-        app.frame();
-        push_mouse_event(SDL_EVENT_MOUSE_BUTTON_UP, item_x, item_y);
-        pump();
-        app.frame();
-        if (app.dialect != 1 || !app.ui.open_popup.empty()) {
-            std::fprintf(stderr, "selftest: item selection failed (dialect=%d)\n", app.dialect);
-            app.shutdown();
-            return 1;
-        }
-        std::printf("selftest selection ok: %s\n", kDialects[app.dialect].c_str());
+        app.dialect = 1;
 
         // Selection + caret overlay screenshot.
         app.editor.set_caret(md::Pos{2, 0, 0});
@@ -5513,24 +7012,35 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // 6. Export EPUB and PDF via Pandoc (+ Typst) if available
-            if (app.has_pandoc) {
-                const std::string epub_out = std::string(PROJECT_SOURCE_DIR) + "/build/selftest_out.epub";
-                if (!app.export_with_pandoc("epub", epub_out)) {
-                    std::fprintf(stderr, "selftest: EPUB export failed\n");
-                    app.shutdown();
-                    return 1;
-                }
+            // 6. Export EPUB, DOCX and PDF via Pandoc (+ Typst) if available
+            {
+                app.doc = md::make_demo_document();
+                app.doc_dirty = true;
+                app.frame();
                 if (!app.typst_path.empty()) {
                     const std::string pdf_out = std::string(PROJECT_SOURCE_DIR) + "/build/selftest_out.pdf";
-                    if (!app.export_with_pandoc("pdf", pdf_out)) {
-                        std::fprintf(stderr, "selftest: PDF export with Typst failed\n");
+                    if (!app.export_gost_pdf(pdf_out)) {
+                        std::fprintf(stderr, "selftest: GOST PDF export on demo doc failed\n");
                         app.shutdown();
                         return 1;
                     }
                 }
-                std::printf("selftest pandoc export ok: EPUB%s\n",
-                            app.typst_path.empty() ? "" : " + PDF (Typst)");
+                if (app.has_pandoc) {
+                    const std::string epub_out = std::string(PROJECT_SOURCE_DIR) + "/build/selftest_out.epub";
+                    if (!app.export_with_pandoc("epub", epub_out)) {
+                        std::fprintf(stderr, "selftest: EPUB export failed\n");
+                        app.shutdown();
+                        return 1;
+                    }
+                    const std::string docx_out = std::string(PROJECT_SOURCE_DIR) + "/build/selftest_out.docx";
+                    if (!app.export_with_pandoc("docx", docx_out)) {
+                        std::fprintf(stderr, "selftest: DOCX export failed\n");
+                        app.shutdown();
+                        return 1;
+                    }
+                    std::printf("selftest pandoc export ok: EPUB + DOCX%s\n",
+                                app.typst_path.empty() ? "" : " + PDF (Typst)");
+                }
             }
 
             std::printf("selftest v1.0.1 fixes ok: open_from_path, drop, chart, formula, dblclick\n");
@@ -5733,6 +7243,143 @@ int main(int argc, char** argv) {
                 app.shutdown();
                 return 1;
             }
+        }
+        {
+            app.light_theme = true;
+            app.ui.palette = ui::light_palette();
+            md::import_markdown(
+                "# Введение\n\n"
+                "Настоящий документ выполнен по ГОСТ Р 2.105–2019 и ГОСТ Р 2.106–2019.\n\n"
+                "---\n\n"
+                "# Технические требования\n\n"
+                "## Общие положения\n\n"
+                "### Требования к питанию\n\n"
+                "- первый элемент перечисления;\n"
+                "- второй элемент перечисления.\n\n"
+                "> Значения приведены при нормальных климатических условиях.\n\n"
+                "$$\n\\rho = \\frac{m}{V}\n$$\n\n"
+                "где m — масса образца, кг;\n\n"
+                "```mermaid\nflowchart LR\nA[Вход] --> B[Расчёт] --> C[Выход]\n```\n\n"
+                "| Наименование показателя | Значение |\n"
+                "| --- | --- |\n"
+                "| 1 Напряжение питания, В | 24 |\n",
+                true, app.doc);
+            app.editor.set_caret(md::Pos{0, 0, 0});
+            app.doc.meta.dev = "Иванов";
+            app.doc.meta.check = "Петров";
+            app.doc.meta.ncheck = "Сидоров";
+            app.doc.meta.approve = "Смирнов";
+            app.doc_dirty = true;
+            app.frame();
+            save_frame("selftest_gost_body.bmp");
+            app.scroll_y = 260.0f;
+            app.frame();
+            save_frame("selftest_gost_mid.bmp");
+            const float page_h = 297.0f * app.layout.mm_px;
+            app.scroll_y = std::max(0.0f, page_h - app.doc_viewport.h + 24.0f);
+            app.frame();
+            for (const md::StampSlot& s : app.stamp_slots) {
+                if (s.field == md::StampField::Code) {
+                    push_mouse_event(SDL_EVENT_MOUSE_BUTTON_DOWN, s.rect.x + s.rect.w * 0.5f, s.rect.y + s.rect.h * 0.5f);
+                    pump();
+                    push_mouse_event(SDL_EVENT_MOUSE_BUTTON_UP, s.rect.x + s.rect.w * 0.5f, s.rect.y + s.rect.h * 0.5f);
+                    pump();
+                    break;
+                }
+            }
+            app.frame();
+            save_frame("selftest_stamp.bmp");
+            const size_t lines_100 = app.layout.lines.size();
+            const size_t pages_100 = app.layout.page_tops.size();
+            app.zoom_to(0.5f, app.doc_viewport.y + app.doc_viewport.h * 0.5f);
+            app.scroll_y = 0.0f;
+            app.frame();
+            save_frame("selftest_zoom50.bmp");
+            if (app.layout.lines.size() != lines_100 || app.layout.page_tops.size() != pages_100) {
+                std::fprintf(stderr, "selftest: zoom changed line/page count (%zu->%zu, %zu->%zu)\n",
+                             lines_100, app.layout.lines.size(), pages_100, app.layout.page_tops.size());
+                app.shutdown();
+                return 1;
+            }
+            app.zoom_to(0.55f, app.doc_viewport.y + app.doc_viewport.h * 0.5f);
+            app.zoom_anchor_doc_y = -1.0f;
+
+            // Проверка Титульного листа (раздел 8 ГОСТ Р 2.105) и автоматического «Содержания» (п. 6.2).
+            app.doc.meta.has_title_page = true;
+            app.doc.meta.has_toc = true;
+            app.doc.meta.title_org = "Министерство науки и высшего образования Российской Федерации";
+            app.doc.meta.title_product = "РЕГУЛЯТОР ДАВЛЕНИЯ РД-25";
+            app.doc.meta.title_doc_kind = "Пояснительная записка";
+            app.doc.meta.title_agrees.push_back(md::TitleSign{"Главный метролог", "А.В. Орлов", "02.09.2026"});
+            app.doc_dirty = true;
+            app.scroll_y = 0.0f;
+            app.frame();
+            save_frame("selftest_title.bmp");
+
+            app.zoom_to(1.0f, app.doc_viewport.y + app.doc_viewport.h * 0.5f);
+            app.zoom_anchor_doc_y = -1.0f;
+            app.frame();
+            // Переходим ко 2-му листу (1-й текстовый лист с элементом «Содержание» и Формой 2).
+            if (app.layout.page_tops.size() >= 2) {
+                app.scroll_y = app.layout.page_tops[1];
+            }
+            app.frame();
+            save_frame("selftest_toc.bmp");
+            if (app.layout.toc_entries.size() != 3
+                || app.layout.toc_entries[0].page_num != 2
+                || app.layout.toc_entries[1].page_num != 3) {
+                std::fprintf(stderr, "selftest: TOC entries failed (count=%zu p0=%d p1=%d)\n",
+                             app.layout.toc_entries.size(),
+                             app.layout.toc_entries.empty() ? -1 : app.layout.toc_entries[0].page_num,
+                             app.layout.toc_entries.size() < 2 ? -1 : app.layout.toc_entries[1].page_num);
+                app.shutdown();
+                return 1;
+            }
+            // Проверка Листа регистрации изменений (ЛРИ) и полностраничной формы Спецификации (Форма 1 ГОСТ Р 2.106).
+            app.doc.meta.has_lri = true;
+            app.doc_dirty = true;
+            app.zoom_to(0.55f, app.doc_viewport.y + app.doc_viewport.h * 0.5f);
+            app.zoom_anchor_doc_y = -1.0f;
+            app.frame();
+            if (!app.layout.page_tops.empty()) {
+                app.scroll_y = app.layout.page_tops.back();
+            }
+            app.frame();
+            save_frame("selftest_lri.bmp");
+
+            md::import_markdown(
+                "| Формат | Зона | Поз. | Обозначение | Наименование | Кол. | Приме- чание |\n"
+                "| :---: | :---: | :---: | :--- | :--- | :---: | :--- |\n"
+                "|  |  |  |  | Документация |  |  |\n"
+                "| А4 |  |  | АБВГ.123456.001 СБ | Сборочный чертеж |  |  |\n"
+                "| А4 |  |  | АБВГ.123456.001 ПЗ | Пояснительная записка |  |  |\n"
+                "|  |  |  |  | Сборочные единицы |  |  |\n"
+                "| А4 |  | 1 | АБВГ.123456.010 | Корпус | 1 |  |\n"
+                "|  |  |  |  | Детали |  |  |\n"
+                "| А4 |  | 2 | АБВГ.711111.001 | Крышка | 1 |  |\n"
+                "| А4 |  | 3 | АБВГ.711111.002 | Втулка | 2 |  |\n"
+                "|  |  |  |  | Стандартные изделия |  |  |\n"
+                "|  |  | 4 |  | Винт М4-6g×12.58 ГОСТ 17473-80 | 4 |  |\n"
+                "|  |  | 5 |  | Шайба 4.65Г ГОСТ 6402-70 | 4 |  |\n",
+                true, app.doc);
+            app.doc.meta.form_type = 1;
+            app.doc.meta.has_title_page = false;
+            app.doc.meta.has_toc = false;
+            app.doc.meta.has_lri = false;
+            app.doc.meta.code = "АБВГ.123456.001";
+            app.doc.meta.name = "Регулятор давления РД-25";
+            app.doc.meta.dev = "Иванов";
+            app.doc.meta.check = "Петров";
+            app.doc.meta.ncheck = "Сидоров";
+            app.doc.meta.approve = "Смирнов";
+            app.editor.set_caret(md::Pos{0, 0, 0, 0});
+            app.scroll_y = 0.0f;
+            app.doc_dirty = true;
+            app.frame();
+            save_frame("selftest_spec.bmp");
+
+            std::printf("selftest gost stamp, title page, TOC, LRI, spec & invariant zoom ok: active=%d lines=%zu\n",
+                        static_cast<int>(app.active_stamp_field), lines_100);
         }
         std::printf("selftest links ok: insert, export, file thumbnail\n");
         std::printf("selftest code block tab ok: indent, outdent, selection\n");

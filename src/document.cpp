@@ -28,18 +28,18 @@ Document make_demo_document() {
         add(std::move(b));
     };
 
-    add(Block{BlockType::Heading, 1, {plain("Marked-text-down")}});
+    add(Block{BlockType::Heading, 1, {plain("GOST-Writer")}});
     para({plain("Лёгкий "), bold("WYSIWYG"),
-          plain("-редактор Markdown: вы работаете с отформатированным текстом, а на диске сохраняется обычный "),
-          code(".md"), plain("-файл. Ниже показано всё, что умеет редактор. Этот текст можно менять или удалить.")});
+          plain("-редактор документов по ГОСТ Р 2.105–2019 и ГОСТ Р 2.106–2019: вы работаете на листе А4 с рамкой и основной надписью Форма 2 / 2а, а на диске сохраняется обычный "),
+          code(".md"), plain("-файл. Ниже показаны основные возможности. Этот текст можно менять или удалить.")});
 
     heading(2, "Форматирование");
     para({plain("Жирный: "), bold("жирный"), plain(", курсив: "), italic("курсив"),
           plain(", жирный курсив: "), Inline{"жирный курсив", StyleBold | StyleItalic},
           plain(", зачёркнутый: "), Inline{"зачёркнутый", StyleStrike},
           plain(", моноширинный: "), code("код"), plain(".")});
-    para({plain("Ссылка: "), Inline{"Marked-text-down на GitHub", StyleLink,
-          "https://github.com/Radi0Glitch/Marked-text-down"},
+    para({plain("Ссылка: "), Inline{"GOST-Writer на GitHub", StyleLink,
+          "https://github.com/Radi0Glitch/GOST-Writer"},
           plain(". Формула в строке: $E = mc^2$.")});
     heading(3, "Заголовок третьего уровня");
 

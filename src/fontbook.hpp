@@ -23,11 +23,16 @@ public:
     void set_zoom(float zoom);
     float zoom() const { return zoom_; }
 
+    void set_base_pt(int pt) { base_pt_ = pt; }
+    int base_pt() const { return base_pt_; }
+
     TTF_Font* get(Family family, bool bold, bool italic, float size, bool strike = false);
+    TTF_Font* get_ref(Family family, bool bold, bool italic, float size, bool strike = false);
 
 private:
     std::string dir_;
     float zoom_ = 1.0f;
+    int base_pt_ = 14;
     std::map<std::tuple<int, bool, bool, bool, int>, TTF_Font*> cache_;
     // Fallback faces (arrows, superscripts) shared by every face of one size and style.
     std::map<std::tuple<bool, bool, bool, int>, std::vector<TTF_Font*>> fallbacks_;

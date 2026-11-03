@@ -1,15 +1,15 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Marked-text-down
-GenericName=Markdown Editor
-GenericName[ru]=Редактор Markdown
-Comment=Visual WYSIWYG Markdown editor with formulas, diagrams and charts
-Comment[ru]=Визуальный WYSIWYG-редактор Markdown с формулами, диаграммами и графиками
+Name=GOST-Writer
+GenericName=GOST Document Editor
+GenericName[ru]=Редактор документов по ГОСТ
+Comment=Visual WYSIWYG Markdown editor for GOST R 2.105-2019 & GOST R 2.106-2019 documents
+Comment[ru]=Визуальный редактор текстовых документов по ГОСТ Р 2.105–2019 и ГОСТ Р 2.106–2019 (ЕСКД)
 Exec=marked-text-down %f
 Icon=marked-text-down
 Terminal=false
 Categories=Office;TextEditor;
 MimeType=text/markdown;text/x-markdown;
-Keywords=markdown;md;editor;formula;chart;
+Keywords=gost;eskd;markdown;md;editor;formula;chart;
 StartupNotify=true

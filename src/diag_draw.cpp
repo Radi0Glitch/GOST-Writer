@@ -27,7 +27,7 @@ const SDL_Color kChipBg{33, 37, 46, 255};
 const SDL_Color kLife{82, 92, 112, 255};
 
 TTF_Font* face(FontBook& fonts, float size) {
-    return fonts.get(Family::Sans, false, false, size);
+    return fonts.get(Family::Serif, false, false, size);
 }
 
 float font_h(TTF_Font* f) { return static_cast<float>(TTF_GetFontHeight(f)); }
@@ -240,14 +240,19 @@ bool ray_exit(ui::Rect r, SDL_FPoint c, SDL_FPoint d, SDL_FPoint& out) {
 ui::Rect draw_chip(ui::Context& ctx, TTF_Font* f, const std::string& text,
                    SDL_FPoint mid, bool selected, float lh) {
     const bool light = ui::is_light_palette(ctx.palette);
-    const SDL_Color chip_bg = light ? SDL_Color{245, 247, 252, 255} : kChipBg;
+    const SDL_Color chip_bg = light ? SDL_Color{255, 255, 255, 255} : SDL_Color{32, 29, 25, 255};
+    const SDL_Color border_col = light ? SDL_Color{30, 28, 25, 255} : SDL_Color{210, 202, 190, 255};
     const float tw = ui::text_width(f, text);
-    const float cw = tw + 16.0f;
-    const float ch = lh + 7.0f;
+    const float cw = tw + 12.0f;
+    const float ch = lh + 4.0f;
     const ui::Rect r{mid.x - cw / 2, mid.y - ch / 2, cw, ch};
-    ui::fill_rounded_rect(ctx, r, 4.0f, chip_bg);
-    ui::stroke_rect(ctx, r, selected ? ctx.palette.accent : ctx.palette.panel_border);
-    ui::draw_text(ctx, f, text, r.x + 8.0f, r.y + (ch - lh) / 2.0f,
+    ui::fill_rect(ctx, r, chip_bg);
+    if (selected) {
+        ui::stroke_rect(ctx, r, ctx.palette.accent);
+    } else {
+        ui::stroke_rect(ctx, r, border_col);
+    }
+    ui::draw_text(ctx, f, text, r.x + 6.0f, r.y + (ch - lh) / 2.0f,
                   selected ? ctx.palette.accent : ctx.palette.text);
     return r;
 }
@@ -458,22 +463,26 @@ FlowGeom layout_flow(const DiagModel& m, const std::vector<NodeBox>& boxes) {
 Size render_flow(ui::Context* ctx, FontBook& fonts, const DiagModel& m,
                  float x, float y, float max_w, const Selection* selected,
                  std::vector<Slot>* slots) {
+    const float z = fonts.zoom();
+    fonts.set_zoom(1.0f);
     float fs = kFontSize;
     std::vector<NodeBox> boxes = measure_nodes(m, fonts, fs);
     FlowGeom geom = layout_flow(m, boxes);
-    if (geom.w > max_w) {
+    const float ref_max_w = max_w / std::max(0.1f, z);
+    if (geom.w > ref_max_w) {
         // Too wide for the column: smaller text makes narrower rows.
-        fs = std::max(9.0f, std::floor(fs * (max_w / geom.w)));
+        fs = std::max(9.0f, std::floor(fs * (ref_max_w / geom.w)));
         boxes = measure_nodes(m, fonts, fs);
         geom = layout_flow(m, boxes);
     }
-    const float scale = geom.w > max_w ? max_w / geom.w : 1.0f;
+    fonts.set_zoom(z);
+    const float scale = (geom.w * z > max_w) ? (max_w / geom.w) : z;
     if (!ctx) return {geom.w * scale, geom.h * scale};
 
     const bool light = ui::is_light_palette(ctx->palette);
-    const SDL_Color fill_col = light ? SDL_Color{224, 232, 248, 255} : kFill;
-    const SDL_Color stroke_col = light ? SDL_Color{136, 154, 186, 255} : kStroke;
-    const SDL_Color edge_col = light ? SDL_Color{96, 112, 140, 255} : kEdge;
+    const SDL_Color fill_col = light ? SDL_Color{255, 255, 255, 255} : SDL_Color{32, 29, 25, 255};
+    const SDL_Color stroke_col = light ? SDL_Color{30, 28, 25, 255} : SDL_Color{210, 202, 190, 255};
+    const SDL_Color edge_col = stroke_col;
 
     auto X = [&](float v) { return x + v * scale; };
     auto Y = [&](float v) { return y + v * scale; };
@@ -623,20 +632,24 @@ SeqGeom layout_seq(const DiagModel& m, FontBook& fonts, float fs) {
 Size render_sequence(ui::Context* ctx, FontBook& fonts, const DiagModel& m,
                      float x, float y, float max_w, const Selection* selected,
                      std::vector<Slot>* slots) {
+    const float z = fonts.zoom();
+    fonts.set_zoom(1.0f);
     float fs = kFontSize;
     SeqGeom geom = layout_seq(m, fonts, fs);
-    if (geom.w > max_w) {
-        fs = std::max(9.0f, std::floor(fs * (max_w / geom.w)));
+    const float ref_max_w = max_w / std::max(0.1f, z);
+    if (geom.w > ref_max_w) {
+        fs = std::max(9.0f, std::floor(fs * (ref_max_w / geom.w)));
         geom = layout_seq(m, fonts, fs);
     }
-    const float scale = geom.w > max_w ? max_w / geom.w : 1.0f;
+    fonts.set_zoom(z);
+    const float scale = (geom.w * z > max_w) ? (max_w / geom.w) : z;
     if (!ctx) return {geom.w * scale, geom.h * scale};
 
     const bool light = ui::is_light_palette(ctx->palette);
-    const SDL_Color fill_col = light ? SDL_Color{224, 232, 248, 255} : kFill;
-    const SDL_Color stroke_col = light ? SDL_Color{136, 154, 186, 255} : kStroke;
-    const SDL_Color edge_col = light ? SDL_Color{96, 112, 140, 255} : kEdge;
-    const SDL_Color life_col = light ? SDL_Color{156, 168, 190, 255} : kLife;
+    const SDL_Color fill_col = light ? SDL_Color{255, 255, 255, 255} : SDL_Color{32, 29, 25, 255};
+    const SDL_Color stroke_col = light ? SDL_Color{30, 28, 25, 255} : SDL_Color{210, 202, 190, 255};
+    const SDL_Color edge_col = stroke_col;
+    const SDL_Color life_col = light ? SDL_Color{90, 86, 80, 255} : SDL_Color{150, 144, 136, 255};
 
     auto X = [&](float v) { return x + v * scale; };
     auto Y = [&](float v) { return y + v * scale; };

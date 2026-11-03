@@ -4,7 +4,7 @@
 #   2. builds and signs the Linux archive and Windows installer (build.sh --sign --test)
 #   3. creates the GitHub release with the files and their .asc signatures
 #
-# Usage: ./release.sh v1.2.2
+# Usage: ./release.sh v1.0.0
 # Needs: the tag created locally (git tag -a vX.Y.Z -m "..."), gh logged in, gpg key F97C07F236D69415.
 
 set -euo pipefail
@@ -37,13 +37,13 @@ fi
 ./build.sh --sign --test
 
 FILES=(
-    "dist/Marked-text-down-linux-x86_64.tar.gz"
-    "dist/Marked-text-down-linux-x86_64.tar.gz.asc"
-    "dist/Marked-text-down-Setup-x86_64.exe"
-    "dist/Marked-text-down-Setup-x86_64.exe.asc"
+    "dist/GOST-Writer-linux-x86_64.tar.gz"
+    "dist/GOST-Writer-linux-x86_64.tar.gz.asc"
+    "dist/GOST-Writer-Setup-x86_64.exe"
+    "dist/GOST-Writer-Setup-x86_64.exe.asc"
 )
 for f in "${FILES[@]}"; do
     [ -f "$f" ] || { echo "missing $f" >&2; exit 1; }
 done
 
-gh release create "$TAG" "${FILES[@]}" --title "Marked-text-down $VERSION" --notes "$NOTES"
+gh release create "$TAG" "${FILES[@]}" --title "GOST-Writer $VERSION" --notes "$NOTES"

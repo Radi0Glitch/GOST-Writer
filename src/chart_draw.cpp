@@ -14,26 +14,26 @@ constexpr float kBarGap = 10.0f;
 constexpr float kFontSize = 13.0f;
 constexpr float kPi = 3.14159265f;
 
-const SDL_Color kBar1{96, 140, 214, 255};
-const SDL_Color kBar2{110, 170, 118, 255};
-const SDL_Color kBar3{214, 150, 82, 255};
-const SDL_Color kBar4{186, 110, 202, 255};
-const SDL_Color kBar5{90, 180, 196, 255};
-const SDL_Color kLine{126, 166, 236, 255};
-const SDL_Color kGrid{62, 70, 90, 255};
+const SDL_Color kBar1{80, 80, 80, 255};
+const SDL_Color kBar2{115, 115, 115, 255};
+const SDL_Color kBar3{150, 150, 150, 255};
+const SDL_Color kBar4{180, 180, 180, 255};
+const SDL_Color kBar5{205, 205, 205, 255};
+const SDL_Color kLine{40, 40, 40, 255};
+const SDL_Color kGrid{160, 160, 160, 255};
 const SDL_Color kPieCols[] = {
-    {96, 140, 214, 255},
-    {110, 170, 118, 255},
-    {214, 150, 82, 255},
-    {186, 110, 202, 255},
-    {90, 180, 196, 255},
-    {214, 120, 130, 255},
-    {170, 150, 96, 255},
-    {130, 136, 190, 255},
+    {65, 65, 65, 255},
+    {105, 105, 105, 255},
+    {140, 140, 140, 255},
+    {175, 175, 175, 255},
+    {205, 205, 205, 255},
+    {90, 90, 90, 255},
+    {125, 125, 125, 255},
+    {160, 160, 160, 255},
 };
 
 TTF_Font* face(FontBook& fonts, float size) {
-    return fonts.get(Family::Sans, false, false, size);
+    return fonts.get(Family::Serif, false, false, size);
 }
 
 float font_h(TTF_Font* f) { return static_cast<float>(TTF_GetFontHeight(f)); }
@@ -128,7 +128,7 @@ std::string fit_chart_label(TTF_Font* font, std::string text, float max_w) {
 
 Size render_xy(ui::Context* ctx, FontBook& fonts, const ChartModel& m,
                float x, float y, float max_w, const Selection* selected,
-               std::vector<Slot>* slots, bool line) {
+               std::vector<Slot>* slots, bool line, float max_h) {
     const size_t n = m.labels.size();
     if (n == 0 || m.values.size() == 0) {
         return placeholder(ctx, fonts, x, y, max_w, "График пуст");
@@ -164,14 +164,21 @@ Size render_xy(ui::Context* ctx, FontBook& fonts, const ChartModel& m,
     const double span = vmax - vmin;
 
     // Size the chart to fit the full block width.
+    const float z = fonts.zoom();
     float total_w = max_w;
-    if (total_w < 220.0f) total_w = 220.0f;
-    if (total_w > 1200.0f) total_w = 1200.0f;
-    float plot_h = std::clamp(total_w * 0.30f, 150.0f, 210.0f);
-    const float left = kPad + kAxisGap + 8.0f;
-    const float bottom_pad = kPad + lh + 16.0f;
-    const float top_pad = kPad + (m.title.empty() ? 0.0f : kTitleH) + lh + 8.0f;
-    const float plot_w = std::max(120.0f, total_w - left - kPad - 10.0f);
+    if (total_w < 220.0f * z) total_w = 220.0f * z;
+    if (total_w > 1200.0f * z) total_w = 1200.0f * z;
+    float plot_h = std::clamp(total_w * 0.30f, 150.0f * z, 210.0f * z);
+    const float left = (kPad + kAxisGap + 8.0f) * z;
+    const float bottom_pad = kPad * z + lh + 16.0f * z;
+    const float top_pad = (kPad + (m.title.empty() ? 0.0f : kTitleH)) * z + lh + 8.0f * z;
+    // A clipped editor canvas caps the height: shrink the plot instead of
+    // pushing the category/value slots below the visible area.
+    if (max_h > 0.0f) {
+        const float avail = max_h - top_pad - bottom_pad;
+        plot_h = std::max(36.0f * z, std::min(plot_h, avail));
+    }
+    const float plot_w = std::max(120.0f * z, total_w - left - (kPad + 10.0f) * z);
     const float plot_x = x + left;
     const float plot_y = y + top_pad;
     const float plot_bottom = plot_y + plot_h;
@@ -237,6 +244,7 @@ Size render_xy(ui::Context* ctx, FontBook& fonts, const ChartModel& m,
             const SDL_Color bc = bar_color(i);
             if (h > 0.0f) {
                 ui::fill_rect(*ctx, br, bc);
+                ui::stroke_rect(*ctx, br, ctx->palette.text);
             }
             if (sel_cat || sel_val) {
                 ui::stroke_rect(*ctx, {br.x - 1.0f, std::min(br.y, plot_bottom - 4.0f),
@@ -317,7 +325,7 @@ Size render_xy(ui::Context* ctx, FontBook& fonts, const ChartModel& m,
     }
 
     if (line && pts.size() >= 2) {
-        set_color(*ctx, kLine);
+        set_color(*ctx, ctx->palette.text);
         for (size_t i = 0; i + 1 < pts.size(); ++i) {
             SDL_RenderLine(ctx->renderer, pts[i].x, pts[i].y, pts[i + 1].x,
                            pts[i + 1].y);
@@ -332,7 +340,7 @@ Size render_xy(ui::Context* ctx, FontBook& fonts, const ChartModel& m,
 
 Size render_pie(ui::Context* ctx, FontBook& fonts, const ChartModel& m,
                 float x, float y, float max_w, const Selection* selected,
-                std::vector<Slot>* slots) {
+                std::vector<Slot>* slots, float max_h) {
     const size_t n = m.labels.size();
     if (n == 0) return placeholder(ctx, fonts, x, y, max_w, "График пуст");
 
@@ -346,14 +354,27 @@ Size render_pie(ui::Context* ctx, FontBook& fonts, const ChartModel& m,
         for (size_t i = 0; i < n; ++i) total += 1.0; // equal shares
     }
 
+    const float z = fonts.zoom();
     float size = max_w * 0.48f;
-    if (size < 120.0f) size = 120.0f;
-    if (size > 170.0f) size = 170.0f;
-    const float top_pad = kPad + (m.title.empty() ? 0.0f : kTitleH);
-    const float legend_x = x + size + kPad * 2.5f;
-    float legend_y = y + top_pad + 10.0f;
-    const float legend_h = static_cast<float>(n) * (lh + 10.0f) + 20.0f;
-    const float total_h = top_pad + std::max(size, legend_h) + kPad * 2.0f;
+    if (size < 120.0f * z) size = 120.0f * z;
+    if (size > 170.0f * z) size = 170.0f * z;
+    const float top_pad = (kPad + (m.title.empty() ? 0.0f : kTitleH)) * z;
+    // Legend rows share the height that is actually there, so every row keeps
+    // its clickable label/value cells inside a clipped editor canvas.
+    float row_step = lh + 10.0f * z;
+    if (max_h > 0.0f) {
+        const float budget = max_h - top_pad - 24.0f;
+        if (budget > 0.0f && static_cast<float>(n) * row_step > budget) {
+            row_step = std::max(0.6f * lh, budget / static_cast<float>(n));
+        }
+        const float pie_budget = std::max(48.0f, max_h - top_pad - kPad * 2.0f * z);
+        if (size > pie_budget) size = pie_budget;
+    }
+    const float legend_x = x + size + kPad * 2.5f * z;
+    float legend_y = y + top_pad + 10.0f * z;
+    const float legend_h = static_cast<float>(n) * row_step + 20.0f * z;
+    float total_h = top_pad + std::max(size, legend_h) + kPad * 2.0f * z;
+    if (max_h > 0.0f) total_h = std::min(total_h, max_h);
     const float total_w = max_w;
 
     if (!ctx) return {total_w, total_h};
@@ -410,8 +431,9 @@ Size render_pie(ui::Context* ctx, FontBook& fonts, const ChartModel& m,
         const float label_w = std::max(36.0f, ui::text_width(f, cl) + 12.0f);
         const float val_w = std::max(30.0f, ui::text_width(f, vl) + 12.0f);
         const float gap = 14.0f;
-        const ui::Rect cat_rect{legend_x + 16.0f, legend_y - 2.0f, label_w, lh + 6.0f};
-        const ui::Rect val_rect{legend_x + 16.0f + label_w + gap, legend_y - 2.0f, val_w, lh + 6.0f};
+        const float rh = std::min(lh + 6.0f, std::max(14.0f, row_step));
+        const ui::Rect cat_rect{legend_x + 16.0f, legend_y - 2.0f, label_w, rh};
+        const ui::Rect val_rect{legend_x + 16.0f + label_w + gap, legend_y - 2.0f, val_w, rh};
         if (slots) {
             slots->push_back(Slot{static_cast<int>(i), false, cat_rect});
             slots->push_back(Slot{static_cast<int>(i), true, val_rect});
@@ -446,7 +468,7 @@ Size render_pie(ui::Context* ctx, FontBook& fonts, const ChartModel& m,
             ui::fill_rect(*ctx, {val_rect.x + 6.0f + vw + 1.5f, legend_y + 1.0f, 1.5f, lh},
                           ctx->palette.accent);
         }
-        legend_y += lh + 10.0f;
+        legend_y += row_step;
     }
 
     return {total_w, total_h};
@@ -457,7 +479,8 @@ Size render_pie(ui::Context* ctx, FontBook& fonts, const ChartModel& m,
 Size render(ui::Context* ctx, FontBook& fonts, const ChartModel& model,
             float x, float y, float max_w,
             const Selection* selected,
-            std::vector<Slot>* slots) {
+            std::vector<Slot>* slots,
+            float max_h) {
     if (slots) slots->clear();
     if (max_w <= 0.0f) max_w = 100000.0f;
     if ((model.labels.empty() && model.values.empty()) || model.kind == ChartKind::Pie) {
@@ -465,10 +488,10 @@ Size render(ui::Context* ctx, FontBook& fonts, const ChartModel& model,
         // guards itself.
     }
     if (model.kind == ChartKind::Pie) {
-        return render_pie(ctx, fonts, model, x, y, max_w, selected, slots);
+        return render_pie(ctx, fonts, model, x, y, max_w, selected, slots, max_h);
     }
     return render_xy(ctx, fonts, model, x, y, max_w, selected, slots,
-                     model.kind == ChartKind::Line);
+                     model.kind == ChartKind::Line, max_h);
 }
 
 Size render_block(ui::Context* ctx, FontBook& fonts, const std::string& code,

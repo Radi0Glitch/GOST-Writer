@@ -8,3 +8,5 @@ tools/pandoc/
 tools/typst/
 third_party/mingw/
 build-rel/
+*.pdf
+docs/TZ.md

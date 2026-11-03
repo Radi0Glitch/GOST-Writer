@@ -248,7 +248,7 @@ std::uint8_t Editor::style_at(Pos p) const {
 void Editor::normalize_caret() {
     std::vector<Inline>& inls = cont(caret_);
     ensure_inlines(inls);
-    if (inls.size() > 1 && inls[caret_.inl].text.empty()) {
+    if (inls.size() > 1 && inls[caret_.inl].text.empty() && inls[caret_.inl].footnote_id == 0) {
         const int old = caret_.inl;
         if (old + 1 < static_cast<int>(inls.size())) {
             // The next inline slides into index `old` once this one is erased.
@@ -387,6 +387,16 @@ void Editor::insert_piece(const std::string& piece) {
         caret_ = Pos{caret_.block, fresh, 0, caret_.cell};
     }
     pending_ = false;
+    {
+        std::vector<Inline>& inls = cont(caret_);
+        if (caret_.inl >= 0 && caret_.inl < static_cast<int>(inls.size())
+            && inls[caret_.inl].footnote_id > 0 && inls[caret_.inl].text.empty()) {
+            const int ins = caret_.inl + 1;
+            inls.insert(inls.begin() + ins, Inline{"", 0, ""});
+            caret_.inl = ins;
+            caret_.offset = 0;
+        }
+    }
     cont(caret_)[caret_.inl].text.insert(caret_.offset, piece);
     caret_.offset += static_cast<int>(piece.size());
 }
@@ -654,11 +664,22 @@ void Editor::delete_selection() {
     if (s.block == e.block) {
         std::vector<Inline>& inls = cont(s);
         if (s.inl == e.inl) {
+            // Нельзя стереть маркер сноски (пустой инлайн с footnote_id).
+            if (inls[s.inl].footnote_id > 0 && inls[s.inl].text.empty()) return;
             inls[s.inl].text.erase(s.offset, e.offset - s.offset);
         } else {
-            inls[s.inl].text.erase(s.offset);
-            inls[e.inl].text.erase(0, e.offset);
-            inls.erase(inls.begin() + s.inl + 1, inls.begin() + e.inl);
+            // Не стираем текст из маркеров сносок на границах выделения.
+            if (!(inls[s.inl].footnote_id > 0 && inls[s.inl].text.empty()))
+                inls[s.inl].text.erase(s.offset);
+            if (!(inls[e.inl].footnote_id > 0 && inls[e.inl].text.empty()))
+                inls[e.inl].text.erase(0, e.offset);
+            // Удаляем промежуточные инлайны, но сохраняем маркеры сносок.
+            for (int i = static_cast<int>(e.inl) - 1; i > s.inl; --i) {
+                if (!(inls[static_cast<size_t>(i)].footnote_id > 0
+                      && inls[static_cast<size_t>(i)].text.empty())) {
+                    inls.erase(inls.begin() + static_cast<size_t>(i));
+                }
+            }
         }
     } else {
         Block& sb = doc_.blocks[s.block];

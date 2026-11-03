@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <utility>
 
@@ -435,12 +436,25 @@ std::string closing(const Marks& m) {
     return s;
 }
 
-std::string render_inlines(const std::vector<Inline>& inlines, bool gfm) {
+std::string render_inlines(const std::vector<Inline>& inlines, bool gfm,
+                           const std::map<int, std::string>* footnotes) {
     std::string out;
     std::string pending; // whitespace held back so markers never touch it
     Marks active;
 
     for (const Inline& inl : inlines) {
+        if (inl.footnote_id > 0) {
+            // Экспортируем сноску с её текстом, чтобы pandoc/DOCX understood footnote syntax.
+            std::string fn_text;
+            if (footnotes) {
+                auto it = footnotes->find(inl.footnote_id);
+                if (it != footnotes->end()) fn_text = it->second;
+            }
+            if (fn_text.empty()) fn_text = "сноска " + std::to_string(inl.footnote_id);
+            out += pending + "^[" + fn_text + "]";
+            pending.clear();
+            continue;
+        }
         if (inl.text.empty()) continue;
         const Marks target = marks_of(inl, gfm);
 
@@ -481,7 +495,7 @@ std::string render_inlines(const std::vector<Inline>& inlines, bool gfm) {
 
 // Escapes what would otherwise turn a paragraph into block syntax.
 std::string paragraph_text(const Block& b, bool gfm) {
-    std::string s = render_inlines(b.inlines, gfm);
+    std::string s = render_inlines(b.inlines, gfm, nullptr);
     if (s.empty()) return s;
     const char c = s[0];
     if (c == '#' || c == '>' || c == '-' || c == '+' || c == '=') {
@@ -505,7 +519,7 @@ std::string table_text(const Block& b, bool gfm) {
         std::string line = "|";
         for (int c = 0; c < cols; ++c) {
             std::string cell;
-            for (char ch : render_inlines(b.cells[static_cast<size_t>(r * cols + c)], gfm)) {
+            for (char ch : render_inlines(b.cells[static_cast<size_t>(r * cols + c)], gfm, nullptr)) {
                 if (ch == '|') cell += "\\|";
                 else cell.push_back(ch);
             }
@@ -568,6 +582,91 @@ std::string prefix_lines(const std::string& text, const std::string& prefix) {
 
 bool import_markdown(const std::string& source, bool gfm, Document& out) {
     out.blocks.clear();
+    out.meta = GostMeta{};
+
+    std::string body = source;
+    if (body.rfind("<!-- gost\n", 0) == 0 || body.rfind("<!-- gost\r\n", 0) == 0) {
+        const size_t end_comment = body.find("-->");
+        if (end_comment != std::string::npos) {
+            const size_t header_start = body.find('\n') + 1;
+            const std::string meta_block = body.substr(header_start, end_comment - header_start);
+            size_t pos = 0;
+            while (pos < meta_block.size()) {
+                size_t nl = meta_block.find('\n', pos);
+                if (nl == std::string::npos) nl = meta_block.size();
+                std::string line = meta_block.substr(pos, nl - pos);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                const size_t colon = line.find(':');
+                if (colon != std::string::npos) {
+                    std::string key = line.substr(0, colon);
+                    std::string val = line.substr(colon + 1);
+                    while (!val.empty() && val.front() == ' ') val.erase(val.begin());
+                    if (key == "code") out.meta.code = val;
+                    else if (key == "name") out.meta.name = val;
+                    else if (key == "org") out.meta.org = val;
+                    else if (key == "dev") out.meta.dev = val;
+                    else if (key == "check") out.meta.check = val;
+                    else if (key == "tcheck") out.meta.tcheck = val;
+                    else if (key == "ncheck") out.meta.ncheck = val;
+                    else if (key == "approve") out.meta.approve = val;
+                    else if (key == "font_pt") out.meta.font_pt = std::clamp(std::atoi(val.c_str()), 11, 14);
+                    else if (key == "line_spacing_idx") out.meta.line_spacing_idx = std::clamp(std::atoi(val.c_str()), 0, 5);
+                    else if (key == "auto_num_headings") out.meta.auto_num_headings = (val != "0" && val != "false");
+                    else if (key == "section_num_media") out.meta.section_num_media = (val == "1" || val == "true");
+                    else if (key == "has_title_page") out.meta.has_title_page = (val == "1" || val == "true");
+                    else if (key == "title_by_lu") out.meta.title_by_lu = (val == "1" || val == "true");
+                    else if (key == "has_toc") out.meta.has_toc = (val == "1" || val == "true");
+                    else if (key == "has_lri") out.meta.has_lri = (val == "1" || val == "true");
+                    else if (key == "form_type") out.meta.form_type = std::clamp(std::atoi(val.c_str()), 0, 3);
+                    else if (key == "signs_cleared") {
+                        out.meta.title_agrees.clear();
+                        out.meta.title_approves.clear();
+                        out.meta.title_devs.clear();
+                    }
+                    else if (key == "title_org") out.meta.title_org = val;
+                    else if (key == "title_okpd") out.meta.title_okpd = val;
+                    else if (key == "title_agree_role") out.meta.title_agree_role = val;
+                    else if (key == "title_agree_name") out.meta.title_agree_name = val;
+                    else if (key == "title_approve_role") out.meta.title_approve_role = val;
+                    else if (key == "title_approve_name") out.meta.title_approve_name = val;
+                    else if (key == "title_product") out.meta.title_product = val;
+                    else if (key == "title_doc_kind") out.meta.title_doc_kind = val;
+                    else if (key == "title_year") out.meta.title_year = val;
+                    else if (key == "sign_agree" || key == "sign_approve" || key == "sign_dev") {
+                        auto& vec = (key == "sign_agree") ? out.meta.title_agrees
+                                  : (key == "sign_approve") ? out.meta.title_approves
+                                  : out.meta.title_devs;
+                        // При первой встрече ключа в файле очищаем дефолтный список
+                        if ((key == "sign_agree" && vec.size() == 1 && vec[0].role == "Руководитель подразделения" && vec[0].name == "И.О. Фамилия")
+                            || (key == "sign_approve" && vec.size() == 1 && vec[0].role == "Руководитель организации" && vec[0].name == "И.О. Фамилия")
+                            || (key == "sign_dev" && vec.size() == 2 && vec[0].role == "Главный инженер" && vec[0].name == "И.О. Фамилия")) {
+                            vec.clear();
+                        }
+                        const size_t p1 = val.find('|');
+                        const size_t p2 = (p1 != std::string::npos) ? val.find('|', p1 + 1) : std::string::npos;
+                        TitleSign ts;
+                        if (p1 == std::string::npos) {
+                            ts.role = val;
+                        } else if (p2 == std::string::npos) {
+                            ts.role = val.substr(0, p1);
+                            ts.name = val.substr(p1 + 1);
+                        } else {
+                            ts.role = val.substr(0, p1);
+                            ts.name = val.substr(p1 + 1, p2 - p1 - 1);
+                            ts.date = val.substr(p2 + 1);
+                        }
+                        vec.push_back(std::move(ts));
+                    }
+                }
+                pos = nl + 1;
+            }
+            out.meta.modified_meta = true;
+            size_t after = end_comment + 3;
+            while (after < body.size() && (body[after] == '\r' || body[after] == '\n')) ++after;
+            body.erase(0, after);
+        }
+    }
+
     Importer im(out);
 
     MD_PARSER parser{};
@@ -582,7 +681,7 @@ bool import_markdown(const std::string& source, bool gfm, Document& out) {
     parser.leave_span = on_leave_span;
     parser.text = on_text;
 
-    const int rc = md_parse(source.data(), static_cast<MD_SIZE>(source.size()), &parser, &im);
+    const int rc = md_parse(body.data(), static_cast<MD_SIZE>(body.size()), &parser, &im);
 
     // Post-pass: display math written as $$ ... $$ paragraphs becomes formula
     // blocks; fenced ```math blocks keep only the inner LaTeX. The user sees
@@ -634,6 +733,60 @@ bool import_markdown(const std::string& source, bool gfm, Document& out) {
     }
     out.blocks = std::move(blocks);
 
+    // Конвертируем старый формат ^[текст сноски] в модель с footnote_id (сноска редактируется в отдельной панели)
+    {
+        int next_id = out.next_footnote_id;
+        auto extract_footnotes_from_inlines = [&](std::vector<Inline>& inlines) {
+            std::vector<Inline> res;
+            for (const auto& inl : inlines) {
+                if (inl.text.empty()) { res.push_back(inl); continue; }
+                const std::string& t = inl.text;
+                size_t pos = 0;
+                while (pos < t.size()) {
+                    if (t[pos] == '^' && pos + 1 < t.size() && t[pos + 1] == '[') {
+                        size_t close = t.find(']', pos + 2);
+                        if (close != std::string::npos && t.find('\n', pos + 2) > close) {
+                            std::string fn_body = t.substr(pos + 2, close - (pos + 2));
+                            int fid = next_id++;
+                            out.footnotes.push_back(Footnote{fid, fn_body});
+                            Inline marker;
+                            marker.text.clear();
+                            marker.style = inl.style;
+                            marker.href.clear();
+                            marker.footnote_id = fid;
+                            res.push_back(marker);
+                            pos = close + 1;
+                            continue;
+                        }
+                    }
+                    // копируем символы как есть, но разбиваем по маркерам
+                    size_t start = pos;
+                    while (pos < t.size()) {
+                        if (t[pos] == '^' && pos + 1 < t.size() && t[pos + 1] == '[') break;
+                        ++pos;
+                    }
+                    if (pos > start) {
+                        Inline chunk = inl;
+                        chunk.text = t.substr(start, pos - start);
+                        chunk.footnote_id = 0;
+                        res.push_back(chunk);
+                    }
+                }
+            }
+            inlines = std::move(res);
+        };
+        for (auto& b : out.blocks) {
+            if (b.type == BlockType::Table) {
+                for (auto& cell : b.cells) {
+                    extract_footnotes_from_inlines(cell);
+                }
+            } else {
+                extract_footnotes_from_inlines(b.inlines);
+            }
+        }
+        out.next_footnote_id = next_id;
+    }
+
     if (out.blocks.empty()) {
         Block empty;
         empty.inlines.push_back(Inline{});
@@ -682,22 +835,22 @@ std::string block_to_raw_text(const Block& b, bool gfm) {
     if (b.type == BlockType::CodeBlock) return code_block_text(b);
     if (b.type == BlockType::Heading) {
         const int level = std::clamp(b.level, 1, 6);
-        return std::string(static_cast<size_t>(level), '#') + " " + render_inlines(b.inlines, gfm);
+        return std::string(static_cast<size_t>(level), '#') + " " + render_inlines(b.inlines, gfm, nullptr);
     }
     if (b.type == BlockType::Rule) return "---";
     if (b.type == BlockType::ListItem) {
         // simple
-        return "- " + render_inlines(b.inlines, gfm);
+        return "- " + render_inlines(b.inlines, gfm, nullptr);
     }
     if (b.type == BlockType::Quote) {
-        return prefix_lines(render_inlines(b.inlines, gfm), "> ");
+        return prefix_lines(render_inlines(b.inlines, gfm, nullptr), "> ");
     }
     return paragraph_text(b, gfm);
 }
 
 std::string inlines_plain(const std::vector<Inline>& inlines) {
     // produce plain text without markers for splitting cells roughly? easier: use render_inlines then strip
-    return render_inlines(inlines, true);
+    return render_inlines(inlines, true, nullptr);
 }
 
 std::vector<std::string> split_table_row_cells(const std::string& line) {
@@ -805,8 +958,8 @@ bool paragraphs_to_tables(Document& doc) {
         const Block& b = doc.blocks[i];
         if (b.type == BlockType::Paragraph && i + 1 < n && doc.blocks[i + 1].type == BlockType::Paragraph) {
             // get raw text of first paragraph
-            std::string line1 = render_inlines(b.inlines, true);
-            std::string line2 = render_inlines(doc.blocks[i + 1].inlines, true);
+            std::string line1 = render_inlines(b.inlines, true, nullptr);
+            std::string line2 = render_inlines(doc.blocks[i + 1].inlines, true, nullptr);
             // try to detect table: line2 is delimiter
             if (is_table_like_row(line2) && line1.find('|') != std::string::npos) {
                 auto aligns = parse_delim_row(line2);
@@ -816,7 +969,7 @@ bool paragraphs_to_tables(Document& doc) {
                     rows.push_back(split_table_row_cells(line1));
                     size_t j = i + 2;
                     while (j < n && doc.blocks[j].type == BlockType::Paragraph) {
-                        std::string l = render_inlines(doc.blocks[j].inlines, true);
+                        std::string l = render_inlines(doc.blocks[j].inlines, true, nullptr);
                         if (is_table_like_row(l)) break; // should not happen
                         if (l.find('|') == std::string::npos) break; // end of table
                         rows.push_back(split_table_row_cells(l));
@@ -926,7 +1079,7 @@ std::string export_markdown(const Document& doc, bool gfm) {
                 case BlockType::Heading: {
                     const int level = std::clamp(b.level, 1, 6);
                     units.push_back(std::string(static_cast<size_t>(level), '#') + " "
-                                    + render_inlines(b.inlines, gfm));
+                                    + render_inlines(b.inlines, gfm, nullptr));
                     break;
                 }
                 case BlockType::CodeBlock: {
@@ -979,11 +1132,85 @@ std::string export_markdown(const Document& doc, bool gfm) {
     }
 
     std::string out;
+    if (doc.meta.modified_meta || !(doc.meta == GostMeta{})) {
+        out += "<!-- gost\n";
+        out += "code: " + doc.meta.code + "\n";
+        out += "name: " + doc.meta.name + "\n";
+        out += "org: " + doc.meta.org + "\n";
+        out += "dev: " + doc.meta.dev + "\n";
+        out += "check: " + doc.meta.check + "\n";
+        out += "tcheck: " + doc.meta.tcheck + "\n";
+        out += "ncheck: " + doc.meta.ncheck + "\n";
+        out += "approve: " + doc.meta.approve + "\n";
+        out += "font_pt: " + std::to_string(doc.meta.font_pt) + "\n";
+        out += "line_spacing_idx: " + std::to_string(doc.meta.line_spacing_idx) + "\n";
+        out += "auto_num_headings: " + std::string(doc.meta.auto_num_headings ? "1" : "0") + "\n";
+        out += "section_num_media: " + std::string(doc.meta.section_num_media ? "1" : "0") + "\n";
+        out += "has_title_page: " + std::string(doc.meta.has_title_page ? "1" : "0") + "\n";
+        out += "title_by_lu: " + std::string(doc.meta.title_by_lu ? "1" : "0") + "\n";
+        out += "has_toc: " + std::string(doc.meta.has_toc ? "1" : "0") + "\n";
+        out += "has_lri: " + std::string(doc.meta.has_lri ? "1" : "0") + "\n";
+        out += "form_type: " + std::to_string(doc.meta.form_type) + "\n";
+        out += "signs_cleared: 1\n";
+        out += "title_org: " + doc.meta.title_org + "\n";
+        out += "title_okpd: " + doc.meta.title_okpd + "\n";
+        out += "title_agree_role: " + doc.meta.title_agree_role + "\n";
+        out += "title_agree_name: " + doc.meta.title_agree_name + "\n";
+        out += "title_approve_role: " + doc.meta.title_approve_role + "\n";
+        out += "title_approve_name: " + doc.meta.title_approve_name + "\n";
+        out += "title_product: " + doc.meta.title_product + "\n";
+        out += "title_doc_kind: " + doc.meta.title_doc_kind + "\n";
+        out += "title_year: " + doc.meta.title_year + "\n";
+        for (const TitleSign& s : doc.meta.title_agrees) {
+            out += "sign_agree: " + s.role + "|" + s.name + "|" + s.date + "\n";
+        }
+        for (const TitleSign& s : doc.meta.title_approves) {
+            out += "sign_approve: " + s.role + "|" + s.name + "|" + s.date + "\n";
+        }
+        for (const TitleSign& s : doc.meta.title_devs) {
+            out += "sign_dev: " + s.role + "|" + s.name + "|" + s.date + "\n";
+        }
+        out += "-->\n\n";
+    }
     for (size_t k = 0; k < units.size(); ++k) {
         if (k > 0) out += "\n\n";
         out += units[k];
     }
-    if (!out.empty()) out += "\n";
+    // Подставляем тексты сносок вместо их id: ^[123] -> ^[текст сноски],
+    // чтобы pandoc/DOCX понимал синтаксис сносок.
+    {
+        std::string result;
+        result.reserve(out.size());
+        size_t pos = 0;
+        while (pos < out.size()) {
+            if (out[pos] == '^' && pos + 1 < out.size() && out[pos + 1] == '[') {
+                size_t close = out.find(']', pos + 2);
+                if (close != std::string::npos) {
+                    std::string inner = out.substr(pos + 2, close - (pos + 2));
+                    bool all_digits = !inner.empty();
+                    for (char c : inner) {
+                        if (c < '0' || c > '9') { all_digits = false; break; }
+                    }
+                    if (all_digits) {
+                        int fid = std::stoi(inner);
+                        std::string replacement;
+                        for (const auto& f : doc.footnotes) {
+                            if (f.id == fid) { replacement = f.text; break; }
+                        }
+                        if (replacement.empty()) replacement = "сноска " + inner;
+                        result += "^[" + replacement + "]";
+                        pos = close + 1;
+                        continue;
+                    }
+                }
+            }
+            result.push_back(out[pos]);
+            ++pos;
+        }
+        out = std::move(result);
+    }
+
+    if (!out.empty() && out.back() != '\n') out += "\n";
     return out;
 }
 

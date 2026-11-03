@@ -1,7 +1,7 @@
 project(
-  'Marked-text-down',
+  'GOST-Writer',
   ['c', 'cpp'],
-  version: '1.2.1',
+  version: '1.0.0',
   default_options: ['c_std=c11', 'cpp_std=c++17', 'warning_level=2'],
 )
 
@@ -80,11 +80,13 @@ if host_machine.system() != 'windows'
                'fonts/PT_Serif-Web-Italic.ttf', 'fonts/PT_Serif-Web-BoldItalic.ttf',
                'fonts/NotoSansMath-Regular.ttf', 'fonts/NotoSans-Regular.ttf',
                install_dir: get_option('datadir') / 'marked-text-down' / 'fonts')
+  install_data('packaging/icons/gw-logo-64.bmp',
+               install_dir: get_option('datadir') / 'marked-text-down')
   install_data('marked-text-down.desktop',
                install_dir: get_option('datadir') / 'applications')
   # The .desktop file references Icon=marked-text-down, so install the logo
   # under that name (renamed copy generated in the build directory).
-  app_icon = configure_file(input: 'mtd-logo.svg',
+  app_icon = configure_file(input: 'GW-logo.svg',
                             output: 'marked-text-down.svg',
                             copy: true)
   install_data(app_icon,
