@@ -94,6 +94,25 @@ ninja -C build
 ./build.sh --linux --windows --test --sign
 ```
 
+Установка в систему (бинарник, шрифты, `.desktop`-файл и иконка):
+
+```sh
+sudo ninja -C build install
+```
+
+### Arch Linux: сборка пакета из git (PKGBUILD / AUR)
+
+Пакет в AUR пока не опубликован (будет выложен вместе с `marked-text-down-git`, как только откроется регистрация в AUR), но `PKGBUILD` уже лежит в репозитории и тянет исходники напрямую из git — собирается и устанавливается штатным `makepkg` без AUR:
+
+```sh
+git clone https://github.com/Radi0Glitch/GOST-Writer.git
+cd GOST-Writer/packaging/aur
+makepkg -si            # собирает gost-writer-git и устанавливает в систему
+```
+
+После публикации в AUR станет доступна прямая установка через AUR-хелперы:
+`yay -S gost-writer-git` (или `yay -S marked-text-down-git` для классической ветки редактора) — сам `PKGBUILD` не изменится.
+
 ---
 
 ## Кросс-компиляция под Windows и сборка NSIS-установщика
