@@ -41,6 +41,9 @@ Section "GOST-Writer" SecMain
   SetOutPath "$INSTDIR\packaging\icons"
   File /nonfatal "packaging\icons\gw-logo-64.bmp"
 
+  SetOutPath "$INSTDIR\templates\gost"
+  File /nonfatal "templates\gost\reference-a4.docx"
+
   SetOutPath "$INSTDIR\tools\pandoc\windows-x86_64"
   File /nonfatal "tools\pandoc\windows-x86_64\pandoc.exe"
 
@@ -105,6 +108,7 @@ Section "Uninstall"
 
   RMDir /r "$INSTDIR\fonts"
   RMDir /r "$INSTDIR\packaging"
+  RMDir /r "$INSTDIR\templates"
   RMDir /r "$INSTDIR\tools"
   RMDir "$INSTDIR"
 

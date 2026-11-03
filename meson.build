@@ -80,7 +80,7 @@ if host_machine.system() != 'windows'
                'fonts/PT_Serif-Web-Italic.ttf', 'fonts/PT_Serif-Web-BoldItalic.ttf',
                'fonts/NotoSansMath-Regular.ttf', 'fonts/NotoSans-Regular.ttf',
                install_dir: get_option('datadir') / 'marked-text-down' / 'fonts')
-  install_data('packaging/icons/gw-logo-64.bmp',
+  install_data('packaging/icons/gw-logo-64.bmp', 'templates/gost/reference-a4.docx',
                install_dir: get_option('datadir') / 'marked-text-down')
   install_data('marked-text-down.desktop',
                install_dir: get_option('datadir') / 'applications')

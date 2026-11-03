@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -146,8 +147,8 @@ std::vector<uint8_t> png_zlib_compress(const uint8_t* data, size_t len) {
     return out;
 }
 
-bool save_png_rgb(const std::string& path, int w, int h, const uint8_t* rgb) {
-    std::ofstream f(path, std::ios::binary);
+bool save_png_rgb(const std::string& path, int w, int h, const uint8_t* rgb, uint32_t dpi = 0) {
+    std::ofstream f(std::filesystem::u8path(path), std::ios::binary);
     if (!f) return false;
     const uint8_t sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
     f.write((const char*)sig, 8);
@@ -165,6 +166,17 @@ bool save_png_rgb(const std::string& path, int w, int h, const uint8_t* rgb) {
         ihdr[12] = 0;
         png_chunk(f, "IHDR", ihdr, 13);
     }
+    if (dpi > 0) {
+        // pHYs chunk: pixels per meter (1 inch = 0.0254 m) so Word/Pandoc sizes A4 page to 210x297 mm
+        const uint32_t ppm = static_cast<uint32_t>(std::round(static_cast<double>(dpi) / 0.0254));
+        uint8_t phys[9];
+        phys[0] = (uint8_t)(ppm >> 24); phys[1] = (uint8_t)(ppm >> 16);
+        phys[2] = (uint8_t)(ppm >> 8);  phys[3] = (uint8_t)ppm;
+        phys[4] = (uint8_t)(ppm >> 24); phys[5] = (uint8_t)(ppm >> 16);
+        phys[6] = (uint8_t)(ppm >> 8);  phys[7] = (uint8_t)ppm;
+        phys[8] = 1; // unit is meter
+        png_chunk(f, "pHYs", phys, 9);
+    }
     {
         size_t row_size = (size_t)w * 3 + 1;
         size_t raw_len = row_size * h;
@@ -181,7 +193,7 @@ bool save_png_rgb(const std::string& path, int w, int h, const uint8_t* rgb) {
     return f.good();
 }
 
-bool save_surface_png(SDL_Surface* surf, const std::string& path) {
+bool save_surface_png(SDL_Surface* surf, const std::string& path, uint32_t dpi = 0) {
     if (!surf) return false;
     SDL_Surface* rgb24 = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGB24);
     if (!rgb24) return false;
@@ -192,7 +204,7 @@ bool save_surface_png(SDL_Surface* surf, const std::string& path) {
                     src + (size_t)y * (size_t)rgb24->pitch,
                     (size_t)rgb24->w * 3);
     }
-    const bool ok = save_png_rgb(path, rgb24->w, rgb24->h, packed.data());
+    const bool ok = save_png_rgb(path, rgb24->w, rgb24->h, packed.data(), dpi);
     SDL_DestroySurface(rgb24);
     return ok;
 }
@@ -213,6 +225,21 @@ bool save_surface_png(SDL_Surface* surf, const std::string& path) {
 #include <filesystem>
 
 namespace {
+
+int run_utf8_cmd(const std::string& cmd) {
+#if defined(_WIN32)
+    std::wstring wcmd;
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, nullptr, 0);
+    if (wlen > 0) {
+        wcmd.resize(static_cast<size_t>(wlen - 1));
+        MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, &wcmd[0], wlen);
+    }
+    std::wstring full_wcmd = L"\"" + wcmd + L"\"";
+    return _wsystem(full_wcmd.c_str());
+#else
+    return std::system(cmd.c_str());
+#endif
+}
 
 std::string find_pandoc_path() {
     std::vector<std::string> candidates;
@@ -240,6 +267,15 @@ std::string find_pandoc_path() {
             candidates.push_back(dir + "/pandoc.exe");
         }
     }
+#elif defined(_WIN32)
+    wchar_t wbuf[MAX_PATH];
+    DWORD wlen = GetModuleFileNameW(nullptr, wbuf, MAX_PATH);
+    if (wlen > 0) {
+        std::filesystem::path exe_p(wbuf);
+        std::string dir = exe_p.parent_path().u8string();
+        candidates.push_back(dir + "/tools/pandoc/windows-x86_64/pandoc.exe");
+        candidates.push_back(dir + "/pandoc.exe");
+    }
 #endif
     candidates.push_back("tools/pandoc/linux-x86_64/pandoc");
     candidates.push_back("tools/pandoc/windows-x86_64/pandoc.exe");
@@ -249,15 +285,16 @@ std::string find_pandoc_path() {
     candidates.push_back("pandoc.exe");
     for (const auto& c : candidates) {
         std::error_code ec;
-        if (c != "pandoc" && c != "pandoc.exe" && !std::filesystem::exists(c, ec)) {
-            continue;
+        if (c != "pandoc" && c != "pandoc.exe") {
+            if (!std::filesystem::exists(std::filesystem::u8path(c), ec)) continue;
+            return c;
         }
 #if defined(_WIN32)
         std::string test = "\"" + c + "\" --version > nul 2>&1";
 #else
         std::string test = "\"" + c + "\" --version > /dev/null 2>&1";
 #endif
-        if (std::system(test.c_str()) == 0) {
+        if (run_utf8_cmd(test) == 0) {
             return c;
         }
     }
@@ -290,6 +327,15 @@ std::string find_typst_path() {
             candidates.push_back(dir + "/typst.exe");
         }
     }
+#elif defined(_WIN32)
+    wchar_t wbuf[MAX_PATH];
+    DWORD wlen = GetModuleFileNameW(nullptr, wbuf, MAX_PATH);
+    if (wlen > 0) {
+        std::filesystem::path exe_p(wbuf);
+        std::string dir = exe_p.parent_path().u8string();
+        candidates.push_back(dir + "/tools/typst/windows-x86_64/typst.exe");
+        candidates.push_back(dir + "/typst.exe");
+    }
 #endif
     candidates.push_back("tools/typst/linux-x86_64/typst");
     candidates.push_back("tools/typst/windows-x86_64/typst.exe");
@@ -299,15 +345,16 @@ std::string find_typst_path() {
     candidates.push_back("typst.exe");
     for (const auto& c : candidates) {
         std::error_code ec;
-        if (c != "typst" && c != "typst.exe" && !std::filesystem::exists(std::filesystem::u8path(c), ec)) {
-            continue;
+        if (c != "typst" && c != "typst.exe") {
+            if (!std::filesystem::exists(std::filesystem::u8path(c), ec)) continue;
+            return c;
         }
 #if defined(_WIN32)
         std::string test = "\"" + c + "\" --version > nul 2>&1";
 #else
         std::string test = "\"" + c + "\" --version > /dev/null 2>&1";
 #endif
-        if (std::system(test.c_str()) == 0) {
+        if (run_utf8_cmd(test) == 0) {
             return c;
         }
     }
@@ -334,6 +381,27 @@ std::string find_fonts_dir() {
         }
     }
     return std::string(PROJECT_SOURCE_DIR) + "/fonts";
+}
+
+std::string find_reference_docx() {
+    std::vector<std::string> candidates;
+    if (const char* base = SDL_GetBasePath()) {
+        std::string b(base);
+        candidates.push_back(b + "templates/gost/reference-a4.docx");
+        candidates.push_back(b + "../templates/gost/reference-a4.docx");
+        candidates.push_back(b + "../share/marked-text-down/reference-a4.docx");
+    }
+    candidates.push_back("templates/gost/reference-a4.docx");
+    candidates.push_back("../templates/gost/reference-a4.docx");
+    candidates.push_back("/usr/share/marked-text-down/reference-a4.docx");
+    candidates.push_back(std::string(PROJECT_SOURCE_DIR) + "/templates/gost/reference-a4.docx");
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(std::filesystem::u8path(c), ec)) {
+            return c;
+        }
+    }
+    return "";
 }
 
 const std::vector<std::string> kDialects = {
@@ -1165,7 +1233,10 @@ struct App {
             SDL_Surface* surf = SDL_RenderReadPixels(renderer, nullptr);
             if (surf) {
                 const std::string png_path = temp_dir + "gost_page_" + std::to_string(p + 1) + ".png";
-                if (save_surface_png(surf, png_path)) {
+                // Записываем физическое разрешение (DPI), чтобы лист А4 (210 мм = 8.268 дюйма)
+                // занимал всю ширину страницы в Word / LibreOffice / Pandoc без уменьшения.
+                const uint32_t page_dpi = static_cast<uint32_t>(std::max(72.0, std::round(surf->w / 8.2677)));
+                if (save_surface_png(surf, png_path, page_dpi)) {
                     paths.push_back(png_path);
                 }
                 SDL_DestroySurface(surf);
@@ -1199,7 +1270,10 @@ struct App {
                 << "#set par(spacing: 0mm, leading: 0mm)\n";
             for (size_t i = 0; i < page_pngs.size(); ++i) {
                 if (i > 0) typ << "#pagebreak()\n";
-                typ << "#image(\"" << typst_escape_str(page_pngs[i])
+                // Используем относительное имя файла внутри temp_dir — работает одинаково на Linux и Windows
+                // без проблем с буквами дисков и обратными слешами.
+                const std::string rel_name = std::filesystem::u8path(page_pngs[i]).filename().u8string();
+                typ << "#image(\"" << typst_escape_str(rel_name)
                     << "\", width: 210mm, height: 297mm, fit: \"stretch\")\n";
             }
         } else {
@@ -1631,23 +1705,19 @@ struct App {
         }
         if (!md::write_text_file(tmp_typ, typ_out)) return false;
 
-        std::string cmd = "\"" + typst_path + "\" compile --root /";
+        std::string root_dir = temp_dir;
+        while (root_dir.size() > 1 && (root_dir.back() == '/' || root_dir.back() == '\\')) {
+            root_dir.pop_back();
+        }
+        std::string cmd = "\"" + typst_path + "\" compile";
+        if (!root_dir.empty()) {
+            cmd += " --root \"" + root_dir + "\"";
+        }
         if (!fonts_dir.empty()) {
             cmd += " --font-path \"" + fonts_dir + "\"";
         }
         cmd += " \"" + tmp_typ + "\" \"" + out_path + "\"";
-#if defined(_WIN32)
-        std::wstring wcmd;
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, nullptr, 0);
-        if (wlen > 0) {
-            wcmd.resize(static_cast<size_t>(wlen - 1));
-            MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, &wcmd[0], wlen);
-        }
-        std::wstring full_wcmd = L"\"" + wcmd + L"\"";
-        int rc = _wsystem(full_wcmd.c_str());
-#else
-        int rc = std::system(cmd.c_str());
-#endif
+        int rc = run_utf8_cmd(cmd);
         std::error_code ec;
         std::filesystem::remove(std::filesystem::u8path(tmp_typ), ec);
         for (const auto& p : page_pngs) {
@@ -1669,6 +1739,7 @@ struct App {
         const std::string tmp_in = temp_dir + "export_input_tmp.md";
         std::vector<std::string> temp_pngs;
 
+        const std::string ref_docx = (to_fmt == "docx") ? find_reference_docx() : std::string();
         std::string md_text;
         if (to_fmt == "docx" || to_fmt == "odt" || to_fmt == "html5") {
             // Рендерим каждый лист А4 со штампом, рамкой, титульным листом, содержанием,
@@ -1676,9 +1747,11 @@ struct App {
             temp_pngs = render_all_pages_to_png(temp_dir, 1.8f);
             if (!temp_pngs.empty()) {
                 std::ostringstream oss;
+                const char* w_attr = (to_fmt == "docx" && !ref_docx.empty()) ? "210mm" : "165mm";
                 for (size_t i = 0; i < temp_pngs.size(); ++i) {
                     if (i > 0) oss << "\n\n";
-                    oss << "![](" << temp_pngs[i] << "){width=100%}";
+                    const std::string rel_name = std::filesystem::u8path(temp_pngs[i]).filename().u8string();
+                    oss << "![](" << rel_name << "){width=" << w_attr << "}";
                 }
                 oss << "\n";
                 md_text = oss.str();
@@ -1701,12 +1774,13 @@ struct App {
                         std::string png = render_visual_block_to_png(b, temp_dir, bi);
                         if (!png.empty()) {
                             temp_pngs.push_back(png);
+                            const std::string rel_name = std::filesystem::u8path(png).filename().u8string();
                             md::Block img_p;
                             img_p.type = md::BlockType::Paragraph;
                             md::Inline img_inl;
                             img_inl.text = gn.figure_caption.empty() ? "Рисунок" : gn.figure_caption;
                             img_inl.style = md::StyleLink | md::StyleImage;
-                            img_inl.href = png;
+                            img_inl.href = rel_name;
                             img_p.inlines.push_back(std::move(img_inl));
                             new_blocks.push_back(std::move(img_p));
                             if (!gn.figure_caption.empty()) {
@@ -1733,8 +1807,18 @@ struct App {
         // Strip quotes from title to keep CLI clean
         title.erase(std::remove(title.begin(), title.end(), '"'), title.end());
 
+        std::string res_dir = temp_dir;
+        while (res_dir.size() > 1 && (res_dir.back() == '/' || res_dir.back() == '\\')) {
+            res_dir.pop_back();
+        }
         std::string cmd = "\"" + pandoc_path + "\" \"" + tmp_in + "\" -f markdown -t " + to_fmt
-                        + " --standalone --metadata title=\"" + title + "\"";
+                        + " --standalone --dpi=96 --metadata title=\"" + title + "\"";
+        if (!res_dir.empty()) {
+            cmd += " --resource-path=\"" + res_dir + "\"";
+        }
+        if (to_fmt == "docx" && !ref_docx.empty()) {
+            cmd += " --reference-doc=\"" + ref_docx + "\"";
+        }
         if (to_fmt == "pdf") {
             if (!typst_path.empty()) {
                 cmd += " --pdf-engine=\"" + typst_path + "\""
@@ -1745,20 +1829,7 @@ struct App {
             }
         }
         cmd += " -o \"" + out_path + "\"";
-#if defined(_WIN32)
-        // Convert UTF-8 command to UTF-16 for _wsystem so Cyrillic paths and arguments work on Windows.
-        std::wstring wcmd;
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, nullptr, 0);
-        if (wlen > 0) {
-            wcmd.resize(static_cast<size_t>(wlen - 1));
-            MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, &wcmd[0], wlen);
-        }
-        // _wsystem invokes cmd.exe /c which strips outer quotes if first and last chars are quotes.
-        std::wstring full_wcmd = L"\"" + wcmd + L"\"";
-        int rc = _wsystem(full_wcmd.c_str());
-#else
-        int rc = std::system(cmd.c_str());
-#endif
+        int rc = run_utf8_cmd(cmd);
         std::error_code ec;
         std::filesystem::remove(std::filesystem::u8path(tmp_in), ec);
         for (const auto& p : temp_pngs) {
