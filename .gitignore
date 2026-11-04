@@ -10,3 +10,9 @@ third_party/mingw/
 build-rel/
 *.pdf
 docs/TZ.md
+
+# AUR makepkg artifacts
+packaging/aur/src/
+packaging/aur/pkg/
+packaging/aur/gost-writer-git/
+packaging/aur/*.pkg.tar*
