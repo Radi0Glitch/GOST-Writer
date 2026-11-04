@@ -14,7 +14,7 @@ optdepends=(
   'typst: direct GOST PDF export engine'
 )
 provides=('gost-writer' 'marked-text-down')
-conflicts=('gost-writer' 'marked-text-down')
+conflicts=('gost-writer' 'gost-writer-debug' 'marked-text-down' 'marked-text-down-debug')
 source=("$pkgname::git+$url.git")
 sha256sums=('SKIP')
 

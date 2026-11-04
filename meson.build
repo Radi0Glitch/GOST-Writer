@@ -59,7 +59,7 @@ else
 endif
 
 executable(
-  'marked-text-down',
+  'gost-writer',
   sources + windows_resources,
   vendored,
   dependencies: deps,
@@ -79,15 +79,15 @@ if host_machine.system() != 'windows'
                'fonts/PT_Serif-Web-Regular.ttf', 'fonts/PT_Serif-Web-Bold.ttf',
                'fonts/PT_Serif-Web-Italic.ttf', 'fonts/PT_Serif-Web-BoldItalic.ttf',
                'fonts/NotoSansMath-Regular.ttf', 'fonts/NotoSans-Regular.ttf',
-               install_dir: get_option('datadir') / 'marked-text-down' / 'fonts')
+               install_dir: get_option('datadir') / 'gost-writer' / 'fonts')
   install_data('packaging/icons/gw-logo-64.bmp', 'templates/gost/reference-a4.docx',
-               install_dir: get_option('datadir') / 'marked-text-down')
-  install_data('marked-text-down.desktop',
+               install_dir: get_option('datadir') / 'gost-writer')
+  install_data('gost-writer.desktop',
                install_dir: get_option('datadir') / 'applications')
-  # The .desktop file references Icon=marked-text-down, so install the logo
+  # The .desktop file references Icon=gost-writer, so install the logo
   # under that name (renamed copy generated in the build directory).
   app_icon = configure_file(input: 'GW-logo.svg',
-                            output: 'marked-text-down.svg',
+                            output: 'gost-writer.svg',
                             copy: true)
   install_data(app_icon,
                install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps')

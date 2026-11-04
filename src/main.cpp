@@ -367,11 +367,14 @@ std::string find_fonts_dir() {
         std::string b(base);
         dirs.push_back(b + "fonts");
         dirs.push_back(b + "../fonts");
+        dirs.push_back(b + "../share/gost-writer/fonts");
         dirs.push_back(b + "../share/marked-text-down/fonts");
     }
     dirs.push_back("fonts");
     dirs.push_back("../fonts");
+    dirs.push_back("/usr/share/gost-writer/fonts");
     dirs.push_back("/usr/share/marked-text-down/fonts");
+    dirs.push_back("/usr/local/share/gost-writer/fonts");
     dirs.push_back("/usr/local/share/marked-text-down/fonts");
     dirs.push_back(std::string(PROJECT_SOURCE_DIR) + "/fonts");
     for (const auto& d : dirs) {
@@ -389,10 +392,12 @@ std::string find_reference_docx() {
         std::string b(base);
         candidates.push_back(b + "templates/gost/reference-a4.docx");
         candidates.push_back(b + "../templates/gost/reference-a4.docx");
+        candidates.push_back(b + "../share/gost-writer/reference-a4.docx");
         candidates.push_back(b + "../share/marked-text-down/reference-a4.docx");
     }
     candidates.push_back("templates/gost/reference-a4.docx");
     candidates.push_back("../templates/gost/reference-a4.docx");
+    candidates.push_back("/usr/share/gost-writer/reference-a4.docx");
     candidates.push_back("/usr/share/marked-text-down/reference-a4.docx");
     candidates.push_back(std::string(PROJECT_SOURCE_DIR) + "/templates/gost/reference-a4.docx");
     for (const auto& c : candidates) {
@@ -1861,6 +1866,7 @@ struct App {
                 std::string b(base);
                 icon_paths.push_back(b + "packaging/icons/gw-logo-64.bmp");
                 icon_paths.push_back(b + "../packaging/icons/gw-logo-64.bmp");
+                icon_paths.push_back(b + "../share/gost-writer/gw-logo-64.bmp");
                 icon_paths.push_back(b + "../share/marked-text-down/gw-logo-64.bmp");
             }
             icon_paths.push_back("packaging/icons/gw-logo-64.bmp");

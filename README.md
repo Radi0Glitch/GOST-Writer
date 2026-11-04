@@ -85,7 +85,7 @@ sudo pacman -S sdl3 sdl3_ttf meson ninja zenity
 ```sh
 meson setup build --buildtype=release
 ninja -C build
-./build/marked-text-down
+./build/gost-writer
 ```
 
 Или сборка готовых дистрибутивов (Linux `.tar.gz` и Windows NSIS `.exe` установщик) одной командой:
@@ -146,7 +146,7 @@ gpg --verify GOST-Writer-Setup-x86_64.exe.asc GOST-Writer-Setup-x86_64.exe
 ## Автотестирование без дисплея (Headless Selftest)
 
 ```sh
-SDL_VIDEODRIVER=dummy ./build/marked-text-down --selftest selftest.bmp
+SDL_VIDEODRIVER=dummy ./build/gost-writer --selftest selftest.bmp
 ```
 
 ---

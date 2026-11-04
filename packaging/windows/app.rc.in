@@ -16,7 +16,7 @@ BEGIN
             VALUE "FileDescription", "GOST-Writer — GOST R 2.105-2019 & 2.106-2019 Document Editor"
             VALUE "ProductName", "GOST-Writer"
             VALUE "ProductVersion", "1.0.0"
-            VALUE "OriginalFilename", "marked-text-down.exe"
+            VALUE "OriginalFilename", "gost-writer.exe"
         END
     END
     BLOCK "VarFileInfo"

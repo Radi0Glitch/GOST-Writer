@@ -58,18 +58,18 @@ build_linux() {
     if [ "$DO_TEST" -eq 1 ]; then
         echo "== selftest"
         (cd build-rel && SDL_VIDEODRIVER=dummy XDG_DATA_HOME="$(mktemp -d)" \
-            ./marked-text-down --selftest "$(mktemp -d)/selftest.bmp" > /tmp/gw-selftest.log 2>&1)
+            ./gost-writer --selftest "$(mktemp -d)/selftest.bmp" > /tmp/gw-selftest.log 2>&1)
         echo "selftest: $(grep -ci ' ok' /tmp/gw-selftest.log) checks passed"
     fi
 
     local R="dist/GOST-Writer-linux-x86_64"
     rm -rf "$R"
     mkdir -p "$R/tools/pandoc/linux-x86_64" "$R/tools/typst/linux-x86_64" "$R/packaging/icons" "$R/templates/gost"
-    cp build-rel/marked-text-down "$R/"
+    cp build-rel/gost-writer "$R/"
     copy_fonts "$R"
     cp packaging/icons/gw-logo-64.bmp "$R/packaging/icons/"
     cp templates/gost/reference-a4.docx "$R/templates/gost/"
-    cp README.md LICENSE.md marked-text-down.desktop "$R/"
+    cp README.md LICENSE.md gost-writer.desktop "$R/"
     cp tools/pandoc/linux-x86_64/pandoc "$R/tools/pandoc/linux-x86_64/"
     cp tools/typst/linux-x86_64/typst "$R/tools/typst/linux-x86_64/"
     tar czf dist/GOST-Writer-linux-x86_64.tar.gz -C dist GOST-Writer-linux-x86_64
@@ -92,12 +92,12 @@ build_windows() {
     local W="dist/GOST-Writer-windows-x86_64"
     rm -rf "$W"
     mkdir -p "$W/tools/pandoc/windows-x86_64" "$W/tools/typst/windows-x86_64" "$W/packaging/icons" "$W/templates/gost"
-    cp build-win/marked-text-down.exe "$W/"
+    cp build-win/gost-writer.exe "$W/"
     cp "$M"/SDL3-*/x86_64-w64-mingw32/bin/SDL3.dll "$M"/SDL3_ttf-*/x86_64-w64-mingw32/bin/SDL3_ttf.dll "$W/"
     copy_fonts "$W"
     cp packaging/icons/gw-logo-64.bmp "$W/packaging/icons/"
     cp templates/gost/reference-a4.docx "$W/templates/gost/"
-    cp README.md LICENSE.md marked-text-down.desktop packaging/icons/mtd-logo.ico installer.nsi "$W/"
+    cp README.md LICENSE.md gost-writer.desktop packaging/icons/mtd-logo.ico installer.nsi "$W/"
     cp tools/pandoc/windows-x86_64/pandoc.exe "$W/tools/pandoc/windows-x86_64/"
     cp tools/typst/windows-x86_64/typst.exe "$W/tools/typst/windows-x86_64/"
     (cd "$W" && makensis -V2 installer.nsi >/tmp/gw-nsis.log 2>&1)

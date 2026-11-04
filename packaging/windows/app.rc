@@ -16,7 +16,7 @@ BEGIN
             VALUE "FileDescription", "Marked-text-down Markdown editor"
             VALUE "ProductName", "Marked-text-down"
             VALUE "ProductVersion", "1.1.0"
-            VALUE "OriginalFilename", "marked-text-down.exe"
+            VALUE "OriginalFilename", "gost-writer.exe"
         END
     END
     BLOCK "VarFileInfo"

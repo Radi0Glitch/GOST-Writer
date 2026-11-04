@@ -15,7 +15,9 @@ pkgbase = gost-writer-git
 	provides = gost-writer
 	provides = marked-text-down
 	conflicts = gost-writer
+	conflicts = gost-writer-debug
 	conflicts = marked-text-down
+	conflicts = marked-text-down-debug
 	source = gost-writer-git::git+https://github.com/Radi0Glitch/GOST-Writer.git
 	sha256sums = SKIP
 

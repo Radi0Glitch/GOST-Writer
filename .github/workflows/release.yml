@@ -49,11 +49,11 @@ jobs:
           set -e
           R="$GITHUB_WORKSPACE/GOST-Writer-linux-x86_64"
           mkdir -p "$R/fonts" "$R/tools/pandoc/linux-x86_64" "$R/tools/typst/linux-x86_64" "$R/packaging/icons" "$R/templates/gost"
-          cp build-rel/marked-text-down "$R/"
+          cp build-rel/gost-writer "$R/"
           cp fonts/FiraSans-*.ttf fonts/FiraMono-*.ttf fonts/PT_Serif-Web-*.ttf fonts/NotoSans-Regular.ttf fonts/NotoSansMath-Regular.ttf fonts/*OFL*.txt "$R/fonts/"
           cp packaging/icons/gw-logo-64.bmp "$R/packaging/icons/"
           cp templates/gost/reference-a4.docx "$R/templates/gost/"
-          cp README.md LICENSE.md marked-text-down.desktop "$R/"
+          cp README.md LICENSE.md gost-writer.desktop "$R/"
           cd "$RUNNER_TEMP"
           curl -fsSL -o pandoc.tgz "https://github.com/jgm/pandoc/releases/download/$PANDOC_VERSION/pandoc-$PANDOC_VERSION-linux-amd64.tar.gz"
           tar xzf pandoc.tgz
@@ -124,12 +124,12 @@ jobs:
           D="$RUNNER_TEMP/mingw"
           W="$GITHUB_WORKSPACE/dist/GOST-Writer-windows-x86_64"
           mkdir -p "$W/fonts" "$W/tools/pandoc/windows-x86_64" "$W/tools/typst/windows-x86_64" "$W/packaging/icons" "$W/templates/gost"
-          cp build-win/marked-text-down.exe "$W/"
+          cp build-win/gost-writer.exe "$W/"
           cp "$D/SDL3-$SDL_VERSION/x86_64-w64-mingw32/bin/SDL3.dll" "$D/SDL3_ttf-$SDL_TTF_VERSION/x86_64-w64-mingw32/bin/SDL3_ttf.dll" "$W/"
           cp fonts/FiraSans-*.ttf fonts/FiraMono-*.ttf fonts/PT_Serif-Web-*.ttf fonts/NotoSans-Regular.ttf fonts/NotoSansMath-Regular.ttf fonts/*OFL*.txt "$W/fonts/"
           cp packaging/icons/gw-logo-64.bmp "$W/packaging/icons/"
           cp templates/gost/reference-a4.docx "$W/templates/gost/"
-          cp README.md LICENSE.md marked-text-down.desktop packaging/icons/mtd-logo.ico installer.nsi "$W/"
+          cp README.md LICENSE.md gost-writer.desktop packaging/icons/mtd-logo.ico installer.nsi "$W/"
           cd "$D"
           curl -fsSL -o pandoc.zip "https://github.com/jgm/pandoc/releases/download/$PANDOC_VERSION/pandoc-$PANDOC_VERSION-windows-x86_64.zip"
           mkdir -p pandoc && unzip -q -o pandoc.zip -d pandoc

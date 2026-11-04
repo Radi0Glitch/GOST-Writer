@@ -13,7 +13,7 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
 !define MUI_ABORTWARNING
-!define MUI_FINISHPAGE_RUN "$INSTDIR\marked-text-down.exe"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\gost-writer.exe"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -30,7 +30,7 @@ Section "GOST-Writer" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
 
-  File "marked-text-down.exe"
+  File "gost-writer.exe"
   File "SDL3.dll"
   File "SDL3_ttf.dll"
   File "README.md"
@@ -54,7 +54,7 @@ Section "GOST-Writer" SecMain
   WriteRegStr HKLM "Software\GOST-Writer" "Install_Dir" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GOST-Writer" "DisplayName" "GOST-Writer"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GOST-Writer" "UninstallString" '"$INSTDIR\uninstall.exe"'
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GOST-Writer" "DisplayIcon" '"$INSTDIR\marked-text-down.exe"'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GOST-Writer" "DisplayIcon" '"$INSTDIR\gost-writer.exe"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GOST-Writer" "Publisher" "GOST-Writer"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GOST-Writer" "DisplayVersion" "1.0.0"
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GOST-Writer" "NoModify" 1
@@ -62,14 +62,14 @@ Section "GOST-Writer" SecMain
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   CreateDirectory "$SMPROGRAMS\GOST-Writer"
-  CreateShortcut "$SMPROGRAMS\GOST-Writer\GOST-Writer.lnk" "$INSTDIR\marked-text-down.exe" "" "$INSTDIR\marked-text-down.exe" 0
+  CreateShortcut "$SMPROGRAMS\GOST-Writer\GOST-Writer.lnk" "$INSTDIR\gost-writer.exe" "" "$INSTDIR\gost-writer.exe" 0
   CreateShortcut "$SMPROGRAMS\GOST-Writer\Uninstall.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
-  CreateShortcut "$DESKTOP\GOST-Writer.lnk" "$INSTDIR\marked-text-down.exe" "" "$INSTDIR\marked-text-down.exe" 0
+  CreateShortcut "$DESKTOP\GOST-Writer.lnk" "$INSTDIR\gost-writer.exe" "" "$INSTDIR\gost-writer.exe" 0
 
   ; --- File associations for .md / .markdown ---
   WriteRegStr HKLM "Software\Classes\GOSTWriter.Markdown" "" "Документ ГОСТ (GOST-Writer)"
-  WriteRegStr HKLM "Software\Classes\GOSTWriter.Markdown\DefaultIcon" "" '"$INSTDIR\marked-text-down.exe",0'
-  WriteRegStr HKLM "Software\Classes\GOSTWriter.Markdown\shell\open\command" "" '"$INSTDIR\marked-text-down.exe" "%1"'
+  WriteRegStr HKLM "Software\Classes\GOSTWriter.Markdown\DefaultIcon" "" '"$INSTDIR\gost-writer.exe",0'
+  WriteRegStr HKLM "Software\Classes\GOSTWriter.Markdown\shell\open\command" "" '"$INSTDIR\gost-writer.exe" "%1"'
   WriteRegStr HKLM "Software\Classes\.md\OpenWithProgids" "GOSTWriter.Markdown" ""
   WriteRegStr HKLM "Software\Classes\.markdown\OpenWithProgids" "GOSTWriter.Markdown" ""
   ReadRegStr $0 HKLM "Software\Classes\.md" ""
@@ -100,7 +100,7 @@ Section "Uninstall"
   DeleteRegKey HKLM "Software\Classes\GOSTWriter.Markdown"
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 
-  Delete "$INSTDIR\marked-text-down.exe"
+  Delete "$INSTDIR\gost-writer.exe"
   Delete "$INSTDIR\SDL3.dll"
   Delete "$INSTDIR\SDL3_ttf.dll"
   Delete "$INSTDIR\README.md"
