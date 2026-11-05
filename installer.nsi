@@ -61,6 +61,9 @@ Section "GOST-Writer" SecMain
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GOST-Writer" "NoRepair" 1
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
+  ; Общий «Пуск» (ProgramData): ярлыки видны всем пользователям,
+  ; установка идёт с правами администратора.
+  SetShellVarContext all
   CreateDirectory "$SMPROGRAMS\GOST-Writer"
   CreateShortcut "$SMPROGRAMS\GOST-Writer\GOST-Writer.lnk" "$INSTDIR\gost-writer.exe" "" "$INSTDIR\gost-writer.exe" 0
   CreateShortcut "$SMPROGRAMS\GOST-Writer\Uninstall.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
@@ -112,6 +115,7 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\tools"
   RMDir "$INSTDIR"
 
+  SetShellVarContext all
   Delete "$SMPROGRAMS\GOST-Writer\GOST-Writer.lnk"
   Delete "$SMPROGRAMS\GOST-Writer\Uninstall.lnk"
   RMDir "$SMPROGRAMS\GOST-Writer"
