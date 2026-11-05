@@ -1848,7 +1848,7 @@ struct App {
             std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
             return false;
         }
-        SDL_SetAppMetadata("GOST-Writer", "1.0.0", "com.radioglitch.gostwriter");
+        SDL_SetAppMetadata("GOST-Writer", "1.0.1", "com.radioglitch.gostwriter");
         if (!TTF_Init()) {
             std::fprintf(stderr, "TTF_Init: %s\n", SDL_GetError());
             return false;
