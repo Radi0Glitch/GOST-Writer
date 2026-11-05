@@ -5,8 +5,8 @@ Unicode True
 
 Name "GOST-Writer"
 OutFile "..\GOST-Writer-Setup-x86_64.exe"
-Icon "mtd-logo.ico"
-UninstallIcon "mtd-logo.ico"
+Icon "gw-logo.ico"
+UninstallIcon "gw-logo.ico"
 InstallDir "$PROGRAMFILES64\GOST-Writer"
 InstallDirRegKey HKLM "Software\GOST-Writer" "Install_Dir"
 RequestExecutionLevel admin

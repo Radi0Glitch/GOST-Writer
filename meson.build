@@ -49,7 +49,7 @@ if host_machine.system() == 'windows'
   # native Windows builds and mingw cross-builds on Linux.
   windows = import('windows')
   rc_conf = configuration_data()
-  rc_conf.set('ICON_PATH', meson.project_source_root() / 'packaging' / 'icons' / 'mtd-logo.ico')
+  rc_conf.set('ICON_PATH', meson.project_source_root() / 'packaging' / 'icons' / 'gw-logo.ico')
   app_rc = configure_file(input: 'packaging/windows/app.rc.in',
                           output: 'app.rc',
                           configuration: rc_conf)

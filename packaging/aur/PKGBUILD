@@ -7,11 +7,10 @@ pkgdesc="Visual WYSIWYG Markdown editor for GOST R 2.105-2019 & GOST R 2.106-201
 arch=('x86_64')
 url="https://github.com/Radi0Glitch/GOST-Writer"
 license=('MIT')
-depends=('sdl3' 'sdl3_ttf')
+depends=('sdl3' 'sdl3_ttf' 'typst')
 makedepends=('git' 'meson' 'ninja')
 optdepends=(
-  'pandoc: export to DOCX/HTML/ODT/EPUB'
-  'typst: direct GOST PDF export engine'
+  'pandoc-cli: export to DOCX/HTML/ODT/EPUB (provides pandoc)'
 )
 provides=('gost-writer' 'marked-text-down')
 conflicts=('gost-writer' 'gost-writer-debug' 'marked-text-down' 'marked-text-down-debug')

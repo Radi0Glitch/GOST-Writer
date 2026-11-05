@@ -1,11 +1,11 @@
-// Application icon for Marked-text-down (Windows)
+// Application icon for GOST-Writer (Windows)
 #include <winver.h>
 
-IDI_ICON1 ICON "mtd-logo.ico"
+IDI_ICON1 ICON "gw-logo.ico"
 
 1 VERSIONINFO
- FILEVERSION 1,1,0,0
- PRODUCTVERSION 1,1,0,0
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
  FILEOS 0x40004L
  FILETYPE 0x1L
 BEGIN
@@ -13,9 +13,9 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "FileDescription", "Marked-text-down Markdown editor"
-            VALUE "ProductName", "Marked-text-down"
-            VALUE "ProductVersion", "1.1.0"
+            VALUE "FileDescription", "GOST-Writer — GOST R 2.105-2019 & 2.106-2019 Document Editor"
+            VALUE "ProductName", "GOST-Writer"
+            VALUE "ProductVersion", "1.0.0"
             VALUE "OriginalFilename", "gost-writer.exe"
         END
     END

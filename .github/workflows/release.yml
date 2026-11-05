@@ -129,7 +129,7 @@ jobs:
           cp fonts/FiraSans-*.ttf fonts/FiraMono-*.ttf fonts/PT_Serif-Web-*.ttf fonts/NotoSans-Regular.ttf fonts/NotoSansMath-Regular.ttf fonts/*OFL*.txt "$W/fonts/"
           cp packaging/icons/gw-logo-64.bmp "$W/packaging/icons/"
           cp templates/gost/reference-a4.docx "$W/templates/gost/"
-          cp README.md LICENSE.md gost-writer.desktop packaging/icons/mtd-logo.ico installer.nsi "$W/"
+          cp README.md LICENSE.md gost-writer.desktop packaging/icons/gw-logo.ico installer.nsi "$W/"
           cd "$D"
           curl -fsSL -o pandoc.zip "https://github.com/jgm/pandoc/releases/download/$PANDOC_VERSION/pandoc-$PANDOC_VERSION-windows-x86_64.zip"
           mkdir -p pandoc && unzip -q -o pandoc.zip -d pandoc

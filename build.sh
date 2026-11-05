@@ -97,7 +97,7 @@ build_windows() {
     copy_fonts "$W"
     cp packaging/icons/gw-logo-64.bmp "$W/packaging/icons/"
     cp templates/gost/reference-a4.docx "$W/templates/gost/"
-    cp README.md LICENSE.md gost-writer.desktop packaging/icons/mtd-logo.ico installer.nsi "$W/"
+    cp README.md LICENSE.md gost-writer.desktop packaging/icons/gw-logo.ico installer.nsi "$W/"
     cp tools/pandoc/windows-x86_64/pandoc.exe "$W/tools/pandoc/windows-x86_64/"
     cp tools/typst/windows-x86_64/typst.exe "$W/tools/typst/windows-x86_64/"
     (cd "$W" && makensis -V2 installer.nsi >/tmp/gw-nsis.log 2>&1)

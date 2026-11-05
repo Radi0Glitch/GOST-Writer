@@ -368,14 +368,14 @@ std::string find_fonts_dir() {
         dirs.push_back(b + "fonts");
         dirs.push_back(b + "../fonts");
         dirs.push_back(b + "../share/gost-writer/fonts");
-        dirs.push_back(b + "../share/marked-text-down/fonts");
     }
     dirs.push_back("fonts");
     dirs.push_back("../fonts");
     dirs.push_back("/usr/share/gost-writer/fonts");
-    dirs.push_back("/usr/share/marked-text-down/fonts");
     dirs.push_back("/usr/local/share/gost-writer/fonts");
-    dirs.push_back("/usr/local/share/marked-text-down/fonts");
+    // Only when running from the source tree (fonts/ really exists there).
+    // Never fall back to PROJECT_SOURCE_DIR blindly: on cross-builds that path
+    // points at the build machine and breaks --font-path on Windows.
     dirs.push_back(std::string(PROJECT_SOURCE_DIR) + "/fonts");
     for (const auto& d : dirs) {
         std::error_code ec;
@@ -383,7 +383,7 @@ std::string find_fonts_dir() {
             return d;
         }
     }
-    return std::string(PROJECT_SOURCE_DIR) + "/fonts";
+    return "";
 }
 
 std::string find_reference_docx() {
@@ -393,12 +393,10 @@ std::string find_reference_docx() {
         candidates.push_back(b + "templates/gost/reference-a4.docx");
         candidates.push_back(b + "../templates/gost/reference-a4.docx");
         candidates.push_back(b + "../share/gost-writer/reference-a4.docx");
-        candidates.push_back(b + "../share/marked-text-down/reference-a4.docx");
     }
     candidates.push_back("templates/gost/reference-a4.docx");
     candidates.push_back("../templates/gost/reference-a4.docx");
     candidates.push_back("/usr/share/gost-writer/reference-a4.docx");
-    candidates.push_back("/usr/share/marked-text-down/reference-a4.docx");
     candidates.push_back(std::string(PROJECT_SOURCE_DIR) + "/templates/gost/reference-a4.docx");
     for (const auto& c : candidates) {
         std::error_code ec;
@@ -454,13 +452,13 @@ const std::vector<std::string> kFileItemsEn = {
 };
 
 std::string data_file(const std::string& name) {
-    char* pref = SDL_GetPrefPath("MarkedTextDown", "Editor");
+    char* pref = SDL_GetPrefPath("GOSTWriter", "Editor");
     if (pref) {
         std::string p = std::string(pref) + name;
         SDL_free(pref);
         return p;
     }
-    return "marked_text_down_" + name;
+    return "gost_writer_" + name;
 }
 
 std::string settings_file_path() {
@@ -1259,10 +1257,11 @@ struct App {
     bool export_gost_pdf(const std::string& out_path) {
         if (typst_path.empty()) return false;
         std::string temp_dir;
-        if (char* pref = SDL_GetPrefPath("MarkedTextDown", "Editor")) {
+        if (char* pref = SDL_GetPrefPath("GOSTWriter", "Editor")) {
             temp_dir = pref;
             SDL_free(pref);
         }
+        if (temp_dir.empty()) temp_dir = ".";
         const std::string tmp_typ = temp_dir + "gost_export_tmp.typ";
 
         // Рендерим каждый лист А4 через md::render_document, чтобы 100% совпадали:
@@ -1737,10 +1736,11 @@ struct App {
         }
         if (!has_pandoc || pandoc_path.empty()) return false;
         std::string temp_dir;
-        if (char* pref = SDL_GetPrefPath("MarkedTextDown", "Editor")) {
+        if (char* pref = SDL_GetPrefPath("GOSTWriter", "Editor")) {
             temp_dir = pref;
             SDL_free(pref);
         }
+        if (temp_dir.empty()) temp_dir = ".";
         const std::string tmp_in = temp_dir + "export_input_tmp.md";
         std::vector<std::string> temp_pngs;
 
@@ -1867,7 +1867,6 @@ struct App {
                 icon_paths.push_back(b + "packaging/icons/gw-logo-64.bmp");
                 icon_paths.push_back(b + "../packaging/icons/gw-logo-64.bmp");
                 icon_paths.push_back(b + "../share/gost-writer/gw-logo-64.bmp");
-                icon_paths.push_back(b + "../share/marked-text-down/gw-logo-64.bmp");
             }
             icon_paths.push_back("packaging/icons/gw-logo-64.bmp");
             icon_paths.push_back("../packaging/icons/gw-logo-64.bmp");
