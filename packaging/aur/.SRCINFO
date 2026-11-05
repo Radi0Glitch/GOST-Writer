@@ -1,6 +1,6 @@
 pkgbase = gost-writer-git
 	pkgdesc = Visual WYSIWYG Markdown editor for GOST R 2.105-2019 & GOST R 2.106-2019 (ESKD) documents
-	pkgver = r30.e8fd693
+	pkgver = r31.78a7ad9
 	pkgrel = 1
 	url = https://github.com/Radi0Glitch/GOST-Writer
 	arch = x86_64
