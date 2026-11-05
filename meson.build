@@ -40,6 +40,8 @@ if host_machine.system() == 'windows'
   deps += [
     cc.find_library('comdlg32'),
     cc.find_library('ole32'),
+    # ShellExecuteW для отправки документа на печать.
+    cc.find_library('shell32'),
   ]
 endif
 

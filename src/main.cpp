@@ -78,6 +78,7 @@ static const PTemplate kChartTemplates[] = {
 #include <limits.h>
 #elif defined(_WIN32)
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 #include "chart_draw.hpp"
@@ -240,6 +241,18 @@ int run_utf8_cmd(const std::string& cmd) {
     return std::system(cmd.c_str());
 #endif
 }
+
+#if defined(_WIN32)
+std::wstring widen_utf8(const std::string& s) {
+    std::wstring w;
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (len > 0) {
+        w.resize(static_cast<size_t>(len - 1));
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], len);
+    }
+    return w;
+}
+#endif
 
 std::string find_pandoc_path() {
     std::vector<std::string> candidates;
@@ -436,6 +449,7 @@ const std::vector<std::string> kFileItemsRu = {
     "Открыть...   Ctrl+O",
     "Сохранить   Ctrl+S",
     "Сохранить как...   Ctrl+Shift+S",
+    "Печать   Ctrl+P",
     "О редакторе и возможностях",
     "Оглавление   Ctrl+Shift+T",
     "Экспорт   ›",
@@ -446,6 +460,7 @@ const std::vector<std::string> kFileItemsEn = {
     "Open...   Ctrl+O",
     "Save   Ctrl+S",
     "Save As...   Ctrl+Shift+S",
+    "Print   Ctrl+P",
     "Welcome & Features",
     "Outline   Ctrl+Shift+T",
     "Export   ›",
@@ -1044,6 +1059,49 @@ struct App {
         } else {
             dialogs::show_error(tr("Ошибка экспорта через Pandoc", "Pandoc export failed"));
         }
+    }
+
+    // Печать без ручного экспорта: собираем ГОСТ PDF во временный файл
+    // и отдаём системе (CUPS lp/lpr на Linux, ShellExecute "print" на Windows).
+    void print_document() {
+        if (typst_path.empty()) {
+            dialogs::show_error(tr("Typst не найден", "Typst not found"));
+            return;
+        }
+        std::string dir;
+        if (char* pref = SDL_GetPrefPath("GOSTWriter", "Editor")) {
+            dir = pref;
+            SDL_free(pref);
+        }
+        const std::string pdf = dir + "gost_print.pdf";
+        if (!export_gost_pdf(pdf)) {
+            dialogs::show_error(tr("Ошибка сборки PDF через Typst", "Typst PDF build failed"));
+            return;
+        }
+#if defined(_WIN32)
+        // Печатающий обработчик PDF открывает файл через глагол "print".
+        // Если у ассоциации его нет — открываем PDF в просмотрщике.
+        const std::wstring wpath = widen_utf8(pdf);
+        HINSTANCE hi = ShellExecuteW(nullptr, L"print", wpath.c_str(), nullptr, nullptr, SW_HIDE);
+        if (reinterpret_cast<intptr_t>(hi) <= 32) {
+            if (reinterpret_cast<intptr_t>(ShellExecuteW(nullptr, L"open", wpath.c_str(),
+                                                        nullptr, nullptr, SW_HIDE)) <= 32) {
+                dialogs::show_error(tr("Не удалось отправить на печать", "Print failed"));
+                return;
+            }
+            status = tr("PDF открыт — распечатайте из просмотрщика", "PDF opened — print from the viewer");
+            return;
+        }
+#else
+        int rc = run_utf8_cmd("lp \"" + pdf + "\" >/dev/null 2>&1");
+        if (rc != 0) rc = run_utf8_cmd("lpr \"" + pdf + "\" >/dev/null 2>&1");
+        if (rc != 0) {
+            dialogs::show_error(tr("Не удалось отправить на печать (нужен CUPS: lp/lpr)",
+                                   "Print failed (CUPS lp/lpr required)"));
+            return;
+        }
+#endif
+        status = tr("Отправлено на печать", "Sent to printer");
     }
 
     static std::string typst_escape_str(const std::string& s) {
@@ -2589,14 +2647,15 @@ struct App {
             if (choice == 1) open();
             if (choice == 2) save();
             if (choice == 3) save_as();
-            if (choice == 4) welcome_open = true;
-            if (choice == 5) toggle_outline();
-            if (choice == 6) {
+            if (choice == 4) print_document();
+            if (choice == 5) welcome_open = true;
+            if (choice == 6) toggle_outline();
+            if (choice == 7) {
                 file_export_mode = true;
                 ui.open_popup = "file";
             }
-            if (choice >= 7 && choice - 7 < static_cast<int>(recent_files.size())) {
-                const std::string path = recent_files[static_cast<size_t>(choice - 7)];
+            if (choice >= 8 && choice - 8 < static_cast<int>(recent_files.size())) {
+                const std::string path = recent_files[static_cast<size_t>(choice - 8)];
                 if (open_from_path(path, false, true) == OpenResult::Error) {
                     recent_files.erase(std::remove(recent_files.begin(), recent_files.end(), path),
                                        recent_files.end());
@@ -3006,6 +3065,9 @@ void handle_key(const SDL_KeyboardEvent& key) {
             case SDLK_S:
                 if (ctrl && shift) save_as();
                 else if (ctrl) save();
+                break;
+            case SDLK_P:
+                if (ctrl && !shift) print_document();
                 break;
             case SDLK_BACKSPACE: editor.backspace(); mark_edited(); ensure_caret_visible(); break;
             case SDLK_DELETE: editor.delete_forward(); mark_edited(); ensure_caret_visible(); break;
